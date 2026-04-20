@@ -5,7 +5,7 @@ WASM3_DIR = $(PAPAGAIO_DIR)/lib/wasm3
 WASM3_SRC = $(WASM3_DIR)/*.c
 
 CFLAGS = -I$(WASM3_DIR) -O2
-LDFLAGS = -lSDL2 -lm
+LDFLAGS = -lSDL2 -lGL -lm
 
 TARGET_HOST = papagame
 TARGET_WASM = game.wasm
@@ -29,5 +29,24 @@ $(TARGET_HOST): host.c | papagaio
 run: all
 	./$(TARGET_HOST) $(TARGET_WASM)
 
+CC_AARCH64 = aarch64-linux-gnu-gcc
+CFLAGS_AARCH64 = -Ipapagaio/lib/wasm3 -O2 -DPORTMASTER
+LDFLAGS_AARCH64 = -lSDL2 -lGLESv2 -lm
+
+portmaster: $(TARGET_WASM)
+	mkdir -p papagame
+	@echo "Montando ambiente de Cross-Compile no Docker..."
+	@sudo docker run --rm -e DEBIAN_FRONTEND=noninteractive -v $(PWD):/bld -w /bld ubuntu:20.04 bash -c " \
+		sed -i 's/^deb /deb [arch=amd64] /g' /etc/apt/sources.list && \
+		echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal main restricted universe multiverse' >> /etc/apt/sources.list && \
+		echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal-updates main restricted universe multiverse' >> /etc/apt/sources.list && \
+		dpkg --add-architecture arm64 && apt-get update -qq && \
+		apt-get install -yq --no-install-recommends gcc-aarch64-linux-gnu libsdl2-dev:arm64 libgles2-mesa-dev:arm64 && \
+		$(CC_AARCH64) $(CFLAGS_AARCH64) host.c $(WASM3_SRC) -o papagame/$(TARGET_HOST) $(LDFLAGS_AARCH64) \
+	"
+	cp $(TARGET_WASM) papagame/
+	@echo "PortMaster build complete! Files are inside papagame/ and papagame.sh"
+	@echo "ZIP the files: zip -r papagame_port.zip papagame papagame.sh"
+
 clean:
-	rm -f $(TARGET_HOST) $(TARGET_WASM)
+	rm -rf $(TARGET_HOST) $(TARGET_WASM)

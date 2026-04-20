@@ -1,6 +1,6 @@
 CC = gcc
 PAPAGAIO_DIR = papagaio
-PAPAGAIOCC = ./$(PAPAGAIO_DIR)/papagaio
+PAPAGAIOCC = ./$(PAPAGAIO_DIR)/papagaiocc
 WASM3_DIR = $(PAPAGAIO_DIR)/lib/wasm3
 WASM3_SRC = $(WASM3_DIR)/*.c
 
@@ -8,11 +8,10 @@ CFLAGS = -I$(WASM3_DIR) -O2
 LDFLAGS = -lSDL2 -lGL -lm
 
 TARGET_HOST = papagame
-TARGET_WASM = game.wasm
 
-.PHONY: all clean run papagaio update-papagaio
+.PHONY: all clean papagaio update-papagaio
 
-all: papagaio $(TARGET_HOST) $(TARGET_WASM)
+all: papagaio $(TARGET_HOST)
 
 papagaio:
 	$(MAKE) -C $(PAPAGAIO_DIR)
@@ -20,14 +19,8 @@ papagaio:
 update-papagaio:
 	git submodule update --remote --merge
 
-$(TARGET_WASM): game.c | papagaio
-	$(PAPAGAIOCC) $< -o $@
-
 $(TARGET_HOST): host.c | papagaio
 	$(CC) $(CFLAGS) $< $(WASM3_SRC) -o $@ $(LDFLAGS)
-
-run: all
-	./$(TARGET_HOST) $(TARGET_WASM)
 
 CC_AARCH64 = aarch64-linux-gnu-gcc
 CFLAGS_AARCH64 = -Ipapagaio/lib/wasm3 -O2 -DPORTMASTER
@@ -44,9 +37,8 @@ portmaster: $(TARGET_WASM)
 		apt-get install -yq --no-install-recommends gcc-aarch64-linux-gnu libsdl2-dev:arm64 libgles2-mesa-dev:arm64 && \
 		$(CC_AARCH64) $(CFLAGS_AARCH64) host.c $(WASM3_SRC) -o papagame/$(TARGET_HOST) $(LDFLAGS_AARCH64) \
 	"
-	cp $(TARGET_WASM) papagame/
 	@echo "PortMaster build complete! Files are inside papagame/ and papagame.sh"
 	@echo "ZIP the files: zip -r papagame_port.zip papagame papagame.sh"
 
 clean:
-	rm -rf $(TARGET_HOST) $(TARGET_WASM)
+	rm -rf $(TARGET_HOST)

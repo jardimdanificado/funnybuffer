@@ -47,7 +47,7 @@ typedef struct {
 
 static SystemConfig _sys;
 static uint32_t     _pal[256] = {
-    0x000000ff, 0x800000ff, 0x008000ff, 0x808000ff, 0x000080ff, 0x800080ff, 0x008080ff, 0xc0c0c0ff,
+    0x00000000, 0x800000ff, 0x008000ff, 0x808000ff, 0x000080ff, 0x800080ff, 0x008080ff, 0xc0c0c0ff,
     0xc0dcc0ff, 0xa6caf0ff, 0x2a3faaff, 0x2a3fffff, 0x2a5f00ff, 0x2a5f55ff, 0x2a5faaff, 0x2a5fffff,
     0x2a7f00ff, 0x2a7f55ff, 0x2a7faaff, 0x2a7fffff, 0x2a9f00ff, 0x2a9f55ff, 0x2a9faaff, 0x2a9fffff,
     0x2abf00ff, 0x2abf55ff, 0x2abfaaff, 0x2abfffff, 0x2adf00ff, 0x2adf55ff, 0x2adfaaff, 0x2adfffff,
@@ -91,8 +91,8 @@ uint32_t papagaio_system(void) {
 }
 
 void papagaio_init(void) {
-    _sys.width    = 160;
-    _sys.height   = 160;
+    _sys.width    = 320;
+    _sys.height   = 240;
     _sys.ram      = 65536;  // 64 KB
     _sys.vram     = 65536;  // 64 KB
     _sys.fb_dirty = 0;

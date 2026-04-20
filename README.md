@@ -1,6 +1,6 @@
-# Papagame Engine
+# Funnybuffer Engine
 
-Papagame is a WebAssembly-based game engine designed to run binary cartridges (.wasm). It utilizes the Wasm3 interpreter and an OpenGL 2.1 / GLES 2.0 backend via SDL2.
+Funnybuffer is a WebAssembly-based game engine designed to run binary cartridges (.wasm). It utilizes the Wasm3 interpreter and an OpenGL 2.1 / GLES 2.0 backend via SDL2.
 
 ## Supported Platforms
 - **Native Desktop:** Linux, Windows, macOS (OpenGL 2.1).
@@ -54,8 +54,8 @@ make
 
 To execute a cartridge:
 ```bash
-# Usage: ./papagame <cartridge.wasm> [render_scale]
-./papagame game.wasm 4
+# Usage: ./funnybuffer <cartridge.wasm> [render_scale]
+./funnybuffer game.wasm 4
 ```
 
 ### PortMaster Export (R36S / ARM64)
@@ -69,10 +69,10 @@ make portmaster
 This procedure performs the following:
 1. Initializes a cross-compilation environment using an Ubuntu 20.04 container.
 2. Links against ARM64-specific libraries (`libGLESv2`).
-3. Generates the `papagame/` directory containing the native AArch64 binary and the associated shell script (`papagame.sh`).
+3. Generates the `funnybuffer/` directory containing the native AArch64 binary and the associated shell script (`funnybuffer.sh`).
 
 ### Deployment
 
 To install on a PortMaster-supported device:
-1. Copy the `papagame/` directory and `papagame.sh` to the device's `ports/` path.
+1. Copy the `funnybuffer/` directory and `funnybuffer.sh` to the device's `ports/` path.
 2. The shell script initializes `gptokeyb` for input mapping and launches the interpreter.

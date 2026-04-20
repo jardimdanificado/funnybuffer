@@ -1,5 +1,5 @@
 #!/bin/bash
-# PORTMASTER: papagame.zip, papagame.sh
+# PORTMASTER: funnybuffer.zip, funnybuffer.sh
 
 XDG_DATA_HOME=${XDG_DATA_HOME:-$HOME/.local/share}
 
@@ -17,7 +17,7 @@ source $controlfolder/control.txt
 source $controlfolder/device_info.txt
 get_controls
 
-GAMEDIR="/$directory/ports/papagame"
+GAMEDIR="/$directory/ports/funnybuffer"
 
 export XDG_CONFIG_HOME="$GAMEDIR/saves"
 export LD_LIBRARY_PATH="$GAMEDIR/libs:$LD_LIBRARY_PATH"
@@ -27,10 +27,10 @@ mkdir -p "$XDG_CONFIG_HOME"
 cd $GAMEDIR
 
 # Inicia o GPTOKEYB para gerenciar os controles da SDL2 e enviar interrupcoes corretamente
-$GPTOKEYB "papagame" &
+$GPTOKEYB "funnybuffer" &
 
 # Executa o host repassando o wasm do jogo alvo
-./papagame game.wasm
+./funnybuffer game.wasm
 
 # Limpa os processos e restaura a interface
 $ESUDO kill -9 $(pidof gptokeyb)

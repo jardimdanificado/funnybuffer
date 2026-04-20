@@ -1,6 +1,6 @@
 TARGET_WASM = game.wasm
 PAPAGAIOCC = ../../papagaio/papagaiocc
-HOST_RUNNER = ../../papagame
+HOST_RUNNER = ../../funnybuffer
 
 all: $(TARGET_WASM) run
 

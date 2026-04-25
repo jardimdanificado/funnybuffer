@@ -12,11 +12,13 @@ extern unsigned char __heap_base;
 extern uint32_t get_ticks();
 
 typedef struct {
-    uint32_t width, height, ram, vram, ram_ptr, vram_ptr, pal_ptr, fb_dirty, pal_dirty;
+    uint32_t width, height, ram, vram, ram_ptr, vram_ptr, fb_dirty;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
     uint8_t  keys[256];
 } SystemConfig;
+
+#define RGB565(r, g, b) (uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3))
 
 typedef struct {
     float x, y, vx, vy;
@@ -25,9 +27,8 @@ typedef struct {
 
 #define SPRITE_COUNT 200
 
-static SystemConfig _sys;
-static uint32_t     _pal[256];
-static uint8_t*     _fb;
+static SystemConfig* _sys;
+static uint16_t* _fb;
 static Olivec_Canvas _oc;
 static Olivec_Canvas _img_sprite;
 static Sprite _sprites[SPRITE_COUNT];
@@ -60,22 +61,19 @@ void int_to_str(int n, char* str) {
 }
 
 void papagaio_init(void) {
-    _sys.width  = 320;
-    _sys.height = 240;
-    _sys.vram   = 320 * 240;
-    _sys.ram    = 1024 * 512;
+    _sys = (SystemConfig*)&__heap_base;
 
-    uint32_t base = ((uint32_t)&__heap_base + 65535) & ~65535;
-    _sys.vram_ptr = base;
-    _sys.ram_ptr  = base + _sys.vram;
-    _sys.pal_ptr  = (uint32_t)_pal;
-    _fb = (uint8_t*)_sys.vram_ptr;
+    _sys->width  = 320;
+    _sys->height = 240;
+    _sys->vram   = 320 * 240 * 2;
+    _sys->ram    = 1024 * 512;
 
-    for(int i=0; i<256; i++) _pal[i] = image_palette[i];
-    _sys.pal_dirty = 1;
+    _sys->vram_ptr = (uint32_t)&__heap_base + sizeof(SystemConfig);
+    _sys->ram_ptr  = _sys->vram_ptr + _sys->vram;
+    _fb = (uint16_t*)_sys->vram_ptr;
 
     _oc = olivec_canvas(_fb, 320, 240, 320);
-    _img_sprite = olivec_canvas((uint8_t*)image_raw + 4, image_width, image_height, image_width);
+    _img_sprite = olivec_canvas((uint16_t*)image_raw, image_width, image_height, image_width);
 
     for (int i = 0; i < SPRITE_COUNT; i++) {
         _sprites[i].w = 24; // Reduzi um pouco pra caber mais
@@ -117,12 +115,12 @@ void papagaio_update(void) {
     }
 
     // Desenha o contador de FPS no canto inferior
-    olivec_rect(_oc, 5, 220, 80, 15, 0); // Fundo do texto
-    olivec_text(_oc, _fps_text, 10, 222, olivec_default_font, 1, 1);
+    olivec_rect(_oc, 5, 220, 80, 15, RGB565(0, 0, 0)); // Fundo do texto
+    olivec_text(_oc, _fps_text, 10, 222, olivec_default_font, 1, RGB565(255, 255, 255));
     
-    _sys.fb_dirty = 1;
+    _sys->fb_dirty = 1;
 }
 
 uint32_t papagaio_system(void) {
-    return (uint32_t)&_sys;
+    return (uint32_t)_sys;
 }

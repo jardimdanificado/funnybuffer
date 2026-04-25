@@ -14,9 +14,7 @@ typedef struct {
     uint32_t vram;        
     uint32_t ram_ptr;     
     uint32_t vram_ptr;    
-    uint32_t pal_ptr;     
     uint32_t fb_dirty;    
-    uint32_t pal_dirty;   
 
     uint32_t gamepad_buttons; 
     int32_t  joystick_lx;     
@@ -35,10 +33,12 @@ typedef struct {
 #define BTN_START  (1 << 10)
 #define BTN_SELECT (1 << 11)
 
-static SystemConfig _sys;
-static uint8_t* _fb;
+#define RGB565(r, g, b) (uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3))
 
-static const uint8_t* sheet_ptr = &image_raw[4];
+static SystemConfig* _sys;
+static uint16_t* _fb;
+
+static const uint16_t* sheet_ptr = (const uint16_t*)image_raw;
 
 // ============================================
 // ROGUELIKE DEFINITIONS
@@ -268,11 +268,11 @@ void update_fov(int px, int py) {
 // UI & RENDER ENGINE
 // ============================================
 
-void draw_rect(int x, int y, int w, int h, uint8_t color_index) {
+void draw_rect(int x, int y, int w, int h, uint16_t color) {
     for (int iy = y; iy < y + h; iy++) {
         for (int ix = x; ix < x + w; ix++) {
-            if (ix >= 0 && ix < _sys.width && iy >= 0 && iy < _sys.height) {
-                _fb[iy * _sys.width + ix] = color_index;
+            if (ix >= 0 && ix < _sys->width && iy >= 0 && iy < _sys->height) {
+                _fb[iy * _sys->width + ix] = color;
             }
         }
     }
@@ -287,10 +287,10 @@ void draw_tile(int tile_idx, int tx, int ty) {
     
     for (int y = 0; y < 32; y++) {
         for (int x = 0; x < 32; x++) {
-            uint8_t pixel = sheet_ptr[(spritesheet_y + y) * 256 + (spritesheet_x + x)];
+            uint16_t pixel = sheet_ptr[(spritesheet_y + y) * 256 + (spritesheet_x + x)];
             if (pixel != 0) { 
-                int scr_idx = (screen_py + y) * _sys.width + (screen_px + x);
-                if (scr_idx >= 0 && scr_idx < _sys.width * _sys.height) {
+                int scr_idx = (screen_py + y) * _sys->width + (screen_px + x);
+                if (scr_idx >= 0 && scr_idx < _sys->width * _sys->height) {
                     _fb[scr_idx] = pixel;
                 }
             }
@@ -299,7 +299,7 @@ void draw_tile(int tile_idx, int tx, int ty) {
 }
 
 uint32_t papagaio_system(void) {
-    return (uint32_t)&_sys;
+    return (uint32_t)_sys;
 }
 
 void reset_game(void) {
@@ -309,19 +309,18 @@ void reset_game(void) {
 }
 
 void papagaio_init(void) {
-    _sys.width    = 320;
-    _sys.height   = 240;
-    _sys.ram      = 65536 * 4; 
-    _sys.vram     = 320 * 240;
-    _sys.fb_dirty = 0;
-    _sys.pal_dirty = 1;
+    _sys = (SystemConfig*)&__heap_base;
 
-    uint32_t base   = ((uint32_t)&__heap_base + 65535) & ~65535;
-    _sys.vram_ptr   = base;
-    _sys.ram_ptr    = base + _sys.vram;
-    _sys.pal_ptr    = (uint32_t)image_palette;
+    _sys->width    = 320;
+    _sys->height   = 240;
+    _sys->ram      = 65536 * 4; 
+    _sys->vram     = 320 * 240 * 2;
+    _sys->fb_dirty = 0;
 
-    _fb = (uint8_t*)_sys.vram_ptr;
+    _sys->vram_ptr   = (uint32_t)&__heap_base + sizeof(SystemConfig);
+    _sys->ram_ptr    = _sys->vram_ptr + _sys->vram;
+
+    _fb = (uint16_t*)_sys->vram_ptr;
     
     reset_game();
 }
@@ -329,22 +328,22 @@ void papagaio_init(void) {
 void papagaio_update(void) {
     // 1. GAME OVER STATE
     if (game_state == STATE_GAMEOVER) {
-        // Render full screen red (palette index 249 is Bright Red)
-        for (int i=0; i<_sys.width*_sys.height; i++) _fb[i] = 249;
+        // Render full screen red
+        for (int i=0; i<_sys->width*_sys->height; i++) _fb[i] = RGB565(255, 0, 0);
         
         // Wait for START button to reboot
-        uint32_t pressed = _sys.gamepad_buttons & ~prev_buttons;
-        prev_buttons = _sys.gamepad_buttons;
+        uint32_t pressed = _sys->gamepad_buttons & ~prev_buttons;
+        prev_buttons = _sys->gamepad_buttons;
         if (pressed & BTN_START) {
             reset_game(); 
         }
-        _sys.fb_dirty = 1;
+        _sys->fb_dirty = 1;
         return;
     }
 
     // 2. DEBUG MODE OVERLAY (Sprite Atlas)
-    if (_sys.gamepad_buttons & BTN_SELECT) {
-        for (int i=0; i<_sys.width*_sys.height; i++) _fb[i] = 0;
+    if (_sys->gamepad_buttons & BTN_SELECT) {
+        for (int i=0; i<_sys->width*_sys->height; i++) _fb[i] = 0;
         int idx = 0;
         for (int ty = 0; ty < 8; ty++) {
             for (int tx = 0; tx < 8; tx++) {
@@ -352,13 +351,13 @@ void papagaio_update(void) {
                 idx++;
             }
         }
-        _sys.fb_dirty = 1;
+        _sys->fb_dirty = 1;
         return;
     }
 
     // 3. GAMEPLAY
-    uint32_t pressed = _sys.gamepad_buttons & ~prev_buttons;
-    prev_buttons = _sys.gamepad_buttons;
+    uint32_t pressed = _sys->gamepad_buttons & ~prev_buttons;
+    prev_buttons = _sys->gamepad_buttons;
     
     int turn_taken = 0;
     int dx = 0, dy = 0;
@@ -380,7 +379,7 @@ void papagaio_update(void) {
     }
     
     // 4. RENDER
-    for (int i=0; i<_sys.width*_sys.height; i++) _fb[i] = 0;
+    for (int i=0; i<_sys->width*_sys->height; i++) _fb[i] = 0;
 
     int px = entities[player_id].x;
     int py = entities[player_id].y;
@@ -427,13 +426,13 @@ void papagaio_update(void) {
     }
 
     // HUD: Draw HP Bar (Contiguous block)
-    // Background Red (idx 249)
-    draw_rect(10, 10, max_player_hp * 6, 12, 249);
-    // Foreground Green (idx 250)
+    // Background Red
+    draw_rect(10, 10, max_player_hp * 6, 12, RGB565(255, 0, 0));
+    // Foreground Green
     int current_hp = entities[player_id].hp;
     if (current_hp > 0) {
-        draw_rect(10, 10, current_hp * 6, 12, 250);
+        draw_rect(10, 10, current_hp * 6, 12, RGB565(0, 255, 0));
     }
 
-    _sys.fb_dirty = 1;
+    _sys->fb_dirty = 1;
 }

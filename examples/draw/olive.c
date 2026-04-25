@@ -405,7 +405,7 @@ static Olivec_Font olivec_default_font = {
 // which preserves the original Alpha of the Background. So you may easily end up with
 // a result that is perceptually transparent if the Alpha is Zero.
 typedef struct {
-    uint8_t *pixels;
+    uint16_t *pixels;
     size_t width;
     size_t height;
     size_t stride;
@@ -414,29 +414,29 @@ typedef struct {
 #define OLIVEC_CANVAS_NULL ((Olivec_Canvas) {0})
 #define OLIVEC_PIXEL(oc, x, y) (oc).pixels[(y)*(oc).stride + (x)]
 
-OLIVECDEF Olivec_Canvas olivec_canvas(uint8_t *pixels, size_t width, size_t height, size_t stride);
+OLIVECDEF Olivec_Canvas olivec_canvas(uint16_t *pixels, size_t width, size_t height, size_t stride);
 OLIVECDEF Olivec_Canvas olivec_subcanvas(Olivec_Canvas oc, int x, int y, int w, int h);
 OLIVECDEF bool olivec_in_bounds(Olivec_Canvas oc, int x, int y);
-OLIVECDEF void olivec_blend_color(uint8_t *c1, uint8_t c2);
-OLIVECDEF void olivec_fill(Olivec_Canvas oc, uint8_t color);
-OLIVECDEF void olivec_rect(Olivec_Canvas oc, int x, int y, int w, int h, uint8_t color);
-OLIVECDEF void olivec_frame(Olivec_Canvas oc, int x, int y, int w, int h, size_t thiccness, uint8_t color);
-OLIVECDEF void olivec_circle(Olivec_Canvas oc, int cx, int cy, int r, uint8_t color);
-OLIVECDEF void olivec_ellipse(Olivec_Canvas oc, int cx, int cy, int rx, int ry, uint8_t color);
+OLIVECDEF void olivec_blend_color(uint16_t *c1, uint16_t c2);
+OLIVECDEF void olivec_fill(Olivec_Canvas oc, uint16_t color);
+OLIVECDEF void olivec_rect(Olivec_Canvas oc, int x, int y, int w, int h, uint16_t color);
+OLIVECDEF void olivec_frame(Olivec_Canvas oc, int x, int y, int w, int h, size_t thiccness, uint16_t color);
+OLIVECDEF void olivec_circle(Olivec_Canvas oc, int cx, int cy, int r, uint16_t color);
+OLIVECDEF void olivec_ellipse(Olivec_Canvas oc, int cx, int cy, int rx, int ry, uint16_t color);
 // TODO: lines with different thiccness
-OLIVECDEF void olivec_line(Olivec_Canvas oc, int x1, int y1, int x2, int y2, uint8_t color);
+OLIVECDEF void olivec_line(Olivec_Canvas oc, int x1, int y1, int x2, int y2, uint16_t color);
 OLIVECDEF bool olivec_normalize_triangle(size_t width, size_t height, int x1, int y1, int x2, int y2, int x3, int y3, int *lx, int *hx, int *ly, int *hy);
 OLIVECDEF bool olivec_barycentric(int x1, int y1, int x2, int y2, int x3, int y3, int xp, int yp, int *u1, int *u2, int *det);
-OLIVECDEF void olivec_triangle(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, uint8_t color);
-OLIVECDEF void olivec_triangle3c(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, uint8_t c1, uint8_t c2, uint8_t c3);
+OLIVECDEF void olivec_triangle(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, uint16_t color);
+OLIVECDEF void olivec_triangle3c(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, uint16_t c1, uint16_t c2, uint16_t c3);
 OLIVECDEF void olivec_triangle3z(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, float z1, float z2, float z3);
 OLIVECDEF void olivec_triangle3uv(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, float tx1, float ty1, float tx2, float ty2, float tx3, float ty3, float z1, float z2, float z3, Olivec_Canvas texture);
 OLIVECDEF void olivec_triangle3uv_bilinear(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, float tx1, float ty1, float tx2, float ty2, float tx3, float ty3, float z1, float z2, float z3, Olivec_Canvas texture);
-OLIVECDEF void olivec_text(Olivec_Canvas oc, const char *text, int x, int y, Olivec_Font font, size_t size, uint8_t color);
+OLIVECDEF void olivec_text(Olivec_Canvas oc, const char *text, int x, int y, Olivec_Font font, size_t size, uint16_t color);
 OLIVECDEF void olivec_sprite_blend(Olivec_Canvas oc, int x, int y, int w, int h, Olivec_Canvas sprite);
 OLIVECDEF void olivec_sprite_copy(Olivec_Canvas oc, int x, int y, int w, int h, Olivec_Canvas sprite);
 OLIVECDEF void olivec_sprite_copy_bilinear(Olivec_Canvas oc, int x, int y, int w, int h, Olivec_Canvas sprite);
-OLIVECDEF uint8_t olivec_pixel_bilinear(Olivec_Canvas sprite, int nx, int ny, int w, int h);
+OLIVECDEF uint16_t olivec_pixel_bilinear(Olivec_Canvas sprite, int nx, int ny, int w, int h);
 
 typedef struct {
     // Safe ranges to iterate over.
@@ -468,7 +468,7 @@ OLIVECDEF bool olivec_normalize_rect(int x, int y, int w, int h,
 
 #ifdef OLIVEC_IMPLEMENTATION
 
-OLIVECDEF Olivec_Canvas olivec_canvas(uint8_t *pixels, size_t width, size_t height, size_t stride)
+OLIVECDEF Olivec_Canvas olivec_canvas(uint16_t *pixels, size_t width, size_t height, size_t stride)
 {
     Olivec_Canvas oc = {
         .pixels = pixels,
@@ -534,12 +534,12 @@ OLIVECDEF Olivec_Canvas olivec_subcanvas(Olivec_Canvas oc, int x, int y, int w, 
 #define OLIVEC_ALPHA(color) (((color)&0xFF000000)>>(8*3))
 #define OLIVEC_RGBA(r, g, b, a) ((((r)&0xFF)<<(8*0)) | (((g)&0xFF)<<(8*1)) | (((b)&0xFF)<<(8*2)) | (((a)&0xFF)<<(8*3)))
 
-OLIVECDEF void olivec_blend_color(uint8_t *c1, uint8_t c2)
+OLIVECDEF void olivec_blend_color(uint16_t *c1, uint16_t c2)
 {
     if (c2 != 0) *c1 = c2;
 }
 
-OLIVECDEF void olivec_fill(Olivec_Canvas oc, uint8_t color)
+OLIVECDEF void olivec_fill(Olivec_Canvas oc, uint16_t color)
 {
     for (size_t y = 0; y < oc.height; ++y) {
         for (size_t x = 0; x < oc.width; ++x) {
@@ -548,7 +548,7 @@ OLIVECDEF void olivec_fill(Olivec_Canvas oc, uint8_t color)
     }
 }
 
-OLIVECDEF void olivec_rect(Olivec_Canvas oc, int x, int y, int w, int h, uint8_t color)
+OLIVECDEF void olivec_rect(Olivec_Canvas oc, int x, int y, int w, int h, uint16_t color)
 {
     Olivec_Normalized_Rect nr = {0};
     if (!olivec_normalize_rect(x, y, w, h, oc.width, oc.height, &nr)) return;
@@ -559,7 +559,7 @@ OLIVECDEF void olivec_rect(Olivec_Canvas oc, int x, int y, int w, int h, uint8_t
     }
 }
 
-OLIVECDEF void olivec_frame(Olivec_Canvas oc, int x, int y, int w, int h, size_t t, uint8_t color)
+OLIVECDEF void olivec_frame(Olivec_Canvas oc, int x, int y, int w, int h, size_t t, uint16_t color)
 {
     if (t == 0) return; // Nothing to render
 
@@ -577,7 +577,7 @@ OLIVECDEF void olivec_frame(Olivec_Canvas oc, int x, int y, int w, int h, size_t
     olivec_rect(oc, x2 + t/2, y1 - t/2, -t, (y2 - y1 + 1) + t/2*2, color); // Right
 }
 
-OLIVECDEF void olivec_ellipse(Olivec_Canvas oc, int cx, int cy, int rx, int ry, uint8_t color)
+OLIVECDEF void olivec_ellipse(Olivec_Canvas oc, int cx, int cy, int rx, int ry, uint16_t color)
 {
     Olivec_Normalized_Rect nr = {0};
     int rx1 = rx + OLIVEC_SIGN(int, rx);
@@ -597,7 +597,7 @@ OLIVECDEF void olivec_ellipse(Olivec_Canvas oc, int cx, int cy, int rx, int ry, 
     }
 }
 
-OLIVECDEF void olivec_circle(Olivec_Canvas oc, int cx, int cy, int r, uint8_t color)
+OLIVECDEF void olivec_circle(Olivec_Canvas oc, int cx, int cy, int r, uint16_t color)
 {
     Olivec_Normalized_Rect nr = {0};
     int r1 = r + OLIVEC_SIGN(int, r);
@@ -625,7 +625,7 @@ OLIVECDEF bool olivec_in_bounds(Olivec_Canvas oc, int x, int y)
 }
 
 // TODO: AA for line
-OLIVECDEF void olivec_line(Olivec_Canvas oc, int x1, int y1, int x2, int y2, uint8_t color)
+OLIVECDEF void olivec_line(Olivec_Canvas oc, int x1, int y1, int x2, int y2, uint16_t color)
 {
     int dx = x2 - x1;
     int dy = y2 - y1;
@@ -667,14 +667,14 @@ OLIVECDEF void olivec_line(Olivec_Canvas oc, int x1, int y1, int x2, int y2, uin
     }
 }
 
-OLIVECDEF uint8_t mix_colors2(uint8_t c1, uint8_t c2, int u1, int det)
+OLIVECDEF uint16_t mix_colors2(uint16_t c1, uint16_t c2, int u1, int det)
 {
     return (u1 * 2 > det) ? c1 : c2;
 }
 
 
 
-OLIVECDEF uint8_t mix_colors3(uint8_t c1, uint8_t c2, uint8_t c3, int u1, int u2, int det)
+OLIVECDEF uint16_t mix_colors3(uint16_t c1, uint16_t c2, uint16_t c3, int u1, int u2, int det)
 {
     int u3 = det - u1 - u2;
     if (u1 >= u2 && u1 >= u3) return c1;
@@ -726,7 +726,7 @@ OLIVECDEF bool olivec_normalize_triangle(size_t width, size_t height, int x1, in
 }
 
 OLIVECDEF void olivec_triangle3c(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3,
-                                 uint8_t c1, uint8_t c2, uint8_t c3)
+                                 uint16_t c1, uint16_t c2, uint16_t c3)
 {
     int lx, hx, ly, hy;
     if (olivec_normalize_triangle(oc.width, oc.height, x1, y1, x2, y2, x3, y3, &lx, &hx, &ly, &hy)) {
@@ -750,7 +750,7 @@ OLIVECDEF void olivec_triangle3z(Olivec_Canvas oc, int x1, int y1, int x2, int y
                 int u1, u2, det;
                 if (olivec_barycentric(x1, y1, x2, y2, x3, y3, x, y, &u1, &u2, &det)) {
                     float z = z1*u1/det + z2*u2/det + z3*(det - u1 - u2)/det;
-                    OLIVEC_PIXEL(oc, x, y) = *(uint8_t*)&z;
+                    OLIVEC_PIXEL(oc, x, y) = *(uint16_t*)&z;
                 }
             }
         }
@@ -817,7 +817,7 @@ OLIVECDEF void olivec_triangle3uv_bilinear(Olivec_Canvas oc, int x1, int y1, int
 }
 
 // TODO: AA for triangle
-OLIVECDEF void olivec_triangle(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, uint8_t color)
+OLIVECDEF void olivec_triangle(Olivec_Canvas oc, int x1, int y1, int x2, int y2, int x3, int y3, uint16_t color)
 {
     int lx, hx, ly, hy;
     if (olivec_normalize_triangle(oc.width, oc.height, x1, y1, x2, y2, x3, y3, &lx, &hx, &ly, &hy)) {
@@ -832,7 +832,7 @@ OLIVECDEF void olivec_triangle(Olivec_Canvas oc, int x1, int y1, int x2, int y2,
     }
 }
 
-OLIVECDEF void olivec_text(Olivec_Canvas oc, const char *text, int tx, int ty, Olivec_Font font, size_t glyph_size, uint8_t color)
+OLIVECDEF void olivec_text(Olivec_Canvas oc, const char *text, int tx, int ty, Olivec_Font font, size_t glyph_size, uint16_t color)
 {
     for (size_t i = 0; *text; ++i, ++text) {
         int gx = tx + i*font.width*glyph_size;
@@ -898,7 +898,7 @@ OLIVECDEF void olivec_sprite_copy(Olivec_Canvas oc, int x, int y, int w, int h, 
 
 // TODO: olivec_pixel_bilinear does not check for out-of-bounds
 // But maybe it shouldn't. Maybe it's a responsibility of the caller of the function.
-OLIVECDEF uint8_t olivec_pixel_bilinear(Olivec_Canvas sprite, int nx, int ny, int w, int h)
+OLIVECDEF uint16_t olivec_pixel_bilinear(Olivec_Canvas sprite, int nx, int ny, int w, int h)
 {
     int px = nx%w;
     int py = ny%h;

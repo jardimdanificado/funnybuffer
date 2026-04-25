@@ -1,64 +1,24 @@
 #!/bin/bash
 
 show_help() {
-    echo "Usage: $0 <input_image> <palette.hex> [output_prefix]"
+    echo "Usage: $0 <input_image> [output_prefix]"
     echo "Output: <output_prefix>.raw and <output_prefix>_data.h"
-    echo "This tool is a standalone script to convert images with a specified palette."
+    echo "This tool converts images to 16-bit RGB565."
     exit 1
 }
 
-if [ "$#" -lt 2 ]; then show_help; fi
+if [ "$#" -lt 1 ]; then show_help; fi
 
 IN="$1"
-PAL="$2"
-PREFIX="${3:-image}"
+PREFIX="${2:-image}"
 
 RAW_OUT="${PREFIX}.raw"
 HEADER_OUT="${PREFIX}_data.h"
-SCRIPT_DIR=$(dirname "$(readlink -f "$0")")
-QUANTIZER="$SCRIPT_DIR/raw_quantizer"
 
 TMP_DIR=$(mktemp -d)
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 if [ ! -f "$IN" ]; then echo "Error: $IN not found"; exit 1; fi
-if [ ! -f "$PAL" ]; then echo "Error: $PAL not found"; exit 1; fi
-
-# Compile quantizer if it doesn't exist
-if [ ! -x "$QUANTIZER" ]; then
-    echo "--- Compiling raw_quantizer ---"
-    gcc -O3 "$SCRIPT_DIR/raw_quantizer.c" -o "$QUANTIZER"
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to compile quantizer."
-        exit 1
-    fi
-fi
-
-echo "--- Preparing reference palette ---"
-# Generates 256 RGB values (768 bytes total) from the palette file
-awk '
-BEGIN { count = 0 }
-/^[^#]/ {
-    val = substr($0, 1, 6)
-    printf "%s\n", val
-    count++
-}
-END {
-    for (i = count; i < 256; i++) {
-        printf "000000\n"
-    }
-}
-' "$PAL" | xxd -r -p > "$TMP_DIR/palette.rgb"
-
-echo "--- Remapping image to palette indices ---"
-# Extract raw RGB pixels and map to our palette
-ffmpeg -v error -i "$IN" -f rawvideo -pix_fmt rgb24 -y "$TMP_DIR/rgb.tmp"
-if [ ! -f "$TMP_DIR/rgb.tmp" ]; then
-    echo "Error failed to read image."
-    exit 1
-fi
-
-"$QUANTIZER" "$TMP_DIR/palette.rgb" < "$TMP_DIR/rgb.tmp" > "$TMP_DIR/raw.tmp"
 
 # Get dimensions
 W=$(ffprobe -v error -select_streams v:0 -show_entries stream=width -of default=noprint_wrappers=1:nokey=1 "$IN")
@@ -69,10 +29,15 @@ if [ -z "$W" ] || [ -z "$H" ]; then
     exit 1
 fi
 
+echo "--- Converting image to RGB565 ---"
+ffmpeg -v error -i "$IN" -f rawvideo -pix_fmt rgb565le -y "$TMP_DIR/raw.tmp"
+if [ ! -f "$TMP_DIR/raw.tmp" ]; then
+    echo "Error failed to convert image."
+    exit 1
+fi
+
 echo "--- Assembling $RAW_OUT ---"
-perl -e "print pack('v', $W)" > "$RAW_OUT"
-perl -e "print pack('v', $H)" >> "$RAW_OUT"
-cat "$TMP_DIR/raw.tmp" >> "$RAW_OUT"
+cat "$TMP_DIR/raw.tmp" > "$RAW_OUT"
 
 echo "--- Generating $HEADER_OUT ---"
 {
@@ -81,29 +46,6 @@ echo "--- Generating $HEADER_OUT ---"
     echo "#define IMAGE_DATA_H"
     echo "static const int image_width = $W;"
     echo "static const int image_height = $H;"
-    echo "static uint32_t image_palette[256] = {"
-    
-    awk '
-    BEGIN { count = 0 }
-    /^[^#]/ {
-        val = $0
-        sub(/\r$/, "", val)
-        if (length(val) == 6) { val = val "ff" }
-        printf "    0x%s,", val
-        count++
-        if (count % 8 == 0) printf "\n"
-        else printf " "
-    }
-    END {
-        for (i = count; i < 256; i++) {
-            printf "    0x00000000,"
-            if ((i + 1) % 8 == 0) printf "\n"
-            else printf " "
-        }
-    }
-    ' "$PAL"
-
-    echo "};"
     echo "static const unsigned char image_raw[] = {"
     
     xxd -i < "$RAW_OUT"

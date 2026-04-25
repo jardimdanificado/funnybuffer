@@ -15,9 +15,7 @@ typedef struct {
     uint32_t vram;        // bytes
     uint32_t ram_ptr;     // wasm linear memory offset for RAM
     uint32_t vram_ptr;    // wasm linear memory offset for VRAM (fb)
-    uint32_t pal_ptr;     // wasm linear memory offset for palette
     uint32_t fb_dirty;    // set to 1 when fb was written this frame
-    uint32_t pal_dirty;   // set to 1 when palette changed
 
     // ---- Gamepad / Inputs Mapped ----
     uint32_t gamepad_buttons; 
@@ -45,12 +43,10 @@ typedef struct {
 #define BTN_L3     (1 << 14)
 #define BTN_R3     (1 << 15)
 
-static SystemConfig _sys;
-static uint8_t* _fb;
+static SystemConfig* _sys;
+static uint16_t* _fb;
 
-// A imagem raw em image_data.h tem 4 bytes de header (W, H) + Pixels
-// Pula os 4 bytes para pegar os pixels puros
-static const uint8_t* pixels_ptr = &image_raw[4];
+static const uint16_t* pixels_ptr = (const uint16_t*)image_raw;
 
 // Desenha a imagem esticando/escalonando para o tamanho destino (dest_w, dest_h)
 void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
@@ -58,16 +54,16 @@ void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
 
     for (int j = 0; j < dest_h; j++) {
         int screen_y = dest_y + j;
-        if (screen_y < 0 || screen_y >= (int)_sys.height) continue;
+        if (screen_y < 0 || screen_y >= (int)_sys->height) continue;
 
         // Calcula a linha da imagem original uma vez por linha de tela
         int v = (j * image_height) / dest_h;
-        const uint8_t* src_row = &pixels_ptr[v * image_width];
-        uint8_t* dst_row = &_fb[screen_y * _sys.width];
+        const uint16_t* src_row = &pixels_ptr[v * image_width];
+        uint16_t* dst_row = &_fb[screen_y * _sys->width];
 
         for (int i = 0; i < dest_w; i++) {
             int screen_x = dest_x + i;
-            if (screen_x < 0 || screen_x >= (int)_sys.width) continue;
+            if (screen_x < 0 || screen_x >= (int)_sys->width) continue;
 
             int u = (i * image_width) / dest_w;
             dst_row[screen_x] = src_row[u];
@@ -76,23 +72,22 @@ void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
 }
 
 uint32_t papagaio_system(void) {
-    return (uint32_t)&_sys;
+    return (uint32_t)_sys;
 }
 
 void papagaio_init(void) {
-    _sys.width    = 320;
-    _sys.height   = 240;
-    _sys.ram      = 65536;
-    _sys.vram     = 320 * 240;
-    _sys.fb_dirty = 0;
-    _sys.pal_dirty = 1; // Avisar que mudamos a paleta
+    _sys = (SystemConfig*)&__heap_base;
 
-    uint32_t base   = ((uint32_t)&__heap_base + 65535) & ~65535;
-    _sys.vram_ptr   = base;
-    _sys.ram_ptr    = base + _sys.vram;
-    _sys.pal_ptr    = (uint32_t)image_palette;
+    _sys->width    = 320;
+    _sys->height   = 240;
+    _sys->ram      = 65536;
+    _sys->vram     = 320 * 240 * 2;
+    _sys->fb_dirty = 0;
 
-    _fb = (uint8_t*)_sys.vram_ptr;
+    _sys->vram_ptr   = (uint32_t)&__heap_base + sizeof(SystemConfig);
+    _sys->ram_ptr    = _sys->vram_ptr + _sys->vram;
+
+    _fb = (uint16_t*)_sys->vram_ptr;
 }
 
 static int pos_x = 100;
@@ -102,26 +97,26 @@ static int scale_h = 100;
 
 void papagaio_update(void) {
     // Limpa a tela (cor 0 da paleta ou 255)
-    for (int i=0; i<_sys.width*_sys.height; i++) _fb[i] = 0;
+    for (int i=0; i<_sys->width*_sys->height; i++) _fb[i] = 0;
 
     // Movimentação
-    if (_sys.gamepad_buttons & BTN_LEFT)  pos_x -= 2;
-    if (_sys.gamepad_buttons & BTN_RIGHT) pos_x += 2;
-    if (_sys.gamepad_buttons & BTN_UP)    pos_y -= 2;
-    if (_sys.gamepad_buttons & BTN_DOWN)  pos_y += 2;
+    if (_sys->gamepad_buttons & BTN_LEFT)  pos_x -= 2;
+    if (_sys->gamepad_buttons & BTN_RIGHT) pos_x += 2;
+    if (_sys->gamepad_buttons & BTN_UP)    pos_y -= 2;
+    if (_sys->gamepad_buttons & BTN_DOWN)  pos_y += 2;
 
     // Analógicos para posição fina ou escala
-    pos_x += (_sys.joystick_lx / 5000);
-    pos_y += (_sys.joystick_ly / 5000);
+    pos_x += (_sys->joystick_lx / 5000);
+    pos_y += (_sys->joystick_ly / 5000);
 
     // Botoes para mudar escala (L1/R1, L2/R2)
-    if (_sys.gamepad_buttons & BTN_L1) scale_w -= 2;
-    if (_sys.gamepad_buttons & BTN_R1) scale_w += 2;
-    if (_sys.gamepad_buttons & BTN_L2) scale_h -= 2;
-    if (_sys.gamepad_buttons & BTN_R2) scale_h += 2;
+    if (_sys->gamepad_buttons & BTN_L1) scale_w -= 2;
+    if (_sys->gamepad_buttons & BTN_R1) scale_w += 2;
+    if (_sys->gamepad_buttons & BTN_L2) scale_h -= 2;
+    if (_sys->gamepad_buttons & BTN_R2) scale_h += 2;
 
     // Botão A reseta escala
-    if (_sys.gamepad_buttons & BTN_A) {
+    if (_sys->gamepad_buttons & BTN_A) {
         scale_w = image_width;
         scale_h = image_height;
     }
@@ -129,5 +124,5 @@ void papagaio_update(void) {
     // Desenha a imagem estalando/esticando
     draw_image_scaled(pos_x, pos_y, scale_w, scale_h);
 
-    _sys.fb_dirty = 1;
+    _sys->fb_dirty = 1;
 }

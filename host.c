@@ -22,9 +22,7 @@ typedef struct {
     uint32_t vram;
     uint32_t ram_ptr;
     uint32_t vram_ptr;
-    uint32_t pal_ptr;
     uint32_t fb_dirty;
-    uint32_t pal_dirty;
     
     // ---- Inputs ----
     uint32_t gamepad_buttons;
@@ -68,12 +66,9 @@ static const char* FRAG_SRC =
     "#version 100\n"
     "precision mediump float;\n"
     "uniform sampler2D u_fb;\n"
-    "uniform sampler2D u_pal;\n"
     "varying vec2 v_uv;\n"
     "void main() {\n"
-    "    float idx = texture2D(u_fb, v_uv).r;\n"
-    "    float palX = (idx * 255.0 + 0.5) / 256.0;\n"
-    "    gl_FragColor = texture2D(u_pal, vec2(palX, 0.5));\n"
+    "    gl_FragColor = texture2D(u_fb, v_uv);\n"
     "}\n";
 #else
 static const char* VERT_SRC =
@@ -89,12 +84,9 @@ static const char* VERT_SRC =
 static const char* FRAG_SRC =
     "#version 120\n"
     "uniform sampler2D u_fb;\n"
-    "uniform sampler2D u_pal;\n"
     "varying vec2 v_uv;\n"
     "void main() {\n"
-    "    float idx = texture2D(u_fb, v_uv).r;\n"
-    "    float palX = (idx * 255.0 + 0.5) / 256.0;\n"
-    "    gl_FragColor = texture2D(u_pal, vec2(palX, 0.5));\n"
+    "    gl_FragColor = texture2D(u_fb, v_uv);\n"
     "}\n";
 #endif
 
@@ -175,8 +167,7 @@ int main(int argc, char** argv) {
 
     mem = m3_GetMemory(runtime, NULL, 0);
     sys = (SystemConfig*)(mem + sys_wasm_offset);
-    uint8_t*  fb  = mem + sys->vram_ptr;
-    uint32_t* pal = (uint32_t*)(mem + sys->pal_ptr);
+    uint16_t* fb  = (uint16_t*)(mem + sys->vram_ptr);
     uint32_t  W   = sys->width, H = sys->height;
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
@@ -205,7 +196,6 @@ int main(int argc, char** argv) {
     GLuint prog = build_program();
     glUseProgram(prog);
     glUniform1i(glGetUniformLocation(prog, "u_fb"),  0);
-    glUniform1i(glGetUniformLocation(prog, "u_pal"), 1);
 
     float quad[] = {
         -1.f, -1.f,  0.f, 1.f,
@@ -228,15 +218,7 @@ int main(int argc, char** argv) {
     glBindTexture(GL_TEXTURE_2D, fb_tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_LUMINANCE, W, H, 0, GL_LUMINANCE, GL_UNSIGNED_BYTE, NULL);
-
-    GLuint pal_tex;
-    glGenTextures(1, &pal_tex);
-    glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, pal_tex);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
 
     int running = 1;
     SDL_Event e;
@@ -286,19 +268,8 @@ int main(int argc, char** argv) {
         if (sys->fb_dirty) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, fb_tex);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_LUMINANCE, GL_UNSIGNED_BYTE, fb);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, fb);
             sys->fb_dirty = 0;
-        }
-        if (sys->pal_dirty) {
-            glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, pal_tex);
-#ifdef PORTMASTER
-            uint32_t sp[256]; for (int i=0; i<256; i++) sp[i] = __builtin_bswap32(pal[i]);
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, sp);
-#else
-            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, pal);
-#endif
-            sys->pal_dirty = 0;
         }
 
         glClear(GL_COLOR_BUFFER_BIT);

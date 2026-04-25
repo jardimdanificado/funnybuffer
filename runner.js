@@ -60,7 +60,7 @@ window.addEventListener('keydown', (e) => {
     }
     if (wasmMemory && sysOffset !== 0) {
         const memoryView = new DataView(wasmMemory.buffer);
-        memoryView.setUint8(sysOffset + 56 + (e.keyCode & 0xFF), 1);
+        memoryView.setUint8(sysOffset + 48 + (e.keyCode & 0xFF), 1);
     }
 });
 
@@ -71,7 +71,7 @@ window.addEventListener('keyup', (e) => {
     }
     if (wasmMemory && sysOffset !== 0) {
         const memoryView = new DataView(wasmMemory.buffer);
-        memoryView.setUint8(sysOffset + 56 + (e.keyCode & 0xFF), 0);
+        memoryView.setUint8(sysOffset + 48 + (e.keyCode & 0xFF), 0);
     }
 });
 
@@ -161,18 +161,18 @@ function gameLoop() {
     const memoryView = new DataView(wasmMemory.buffer);
     
     // Inject gamepad inputs
-    memoryView.setUint32(sysOffset + 36, gamepadButtons, true);
+    memoryView.setUint32(sysOffset + 28, gamepadButtons, true);
 
     // Call Update
     wasmInstance.exports.papagaio_update();
 
     // Check Dirty flags
-    const fbDirty = memoryView.getUint32(sysOffset + 28, true);
+    const fbDirty = memoryView.getUint32(sysOffset + 24, true);
     
     if (fbDirty) {
         renderFrame(memoryView);
         // Clear dirty flag
-        memoryView.setUint32(sysOffset + 28, 0, true);
+        memoryView.setUint32(sysOffset + 24, 0, true);
     }
 }
 
@@ -180,59 +180,31 @@ function renderFrame(memoryView) {
     const w = memoryView.getUint32(sysOffset + 0, true);
     const h = memoryView.getUint32(sysOffset + 4, true);
     const vramPtr = memoryView.getUint32(sysOffset + 20, true);
-    const palPtr = memoryView.getUint32(sysOffset + 24, true);
 
     // Create or reuse ImageData
     if (!imageDataCache || imageDataCache.width !== w || imageDataCache.height !== h) {
         imageDataCache = ctx.createImageData(w, h);
     }
 
-    // Read palette (256 * 4 bytes = 1024 bytes)
-    // Little-endian WASM 32-bit colors. Assume RGBA or similar formats?
-    // host.c palette texture is GL_RGBA. 
-    // uint32_t sp[256]; for (int i=0; i<256; i++) sp[i] = __builtin_bswap32(pal[i]); -> on big endian?
-    // In host.c __builtin_bswap32 was used depending on PORTMASTER.
-    // Let's read pixels directly. 
-    // The palette in game is typically: A B G R or R G B A? 
-    // The previous shell script generated: 0xRRGGBBAA or 0xAARRGGBB depending on awk handling 000000ff
-    // Our palette values match what was in palette.hex. 
-
-    const mem8 = new Uint8Array(wasmMemory.buffer);
-    const fb = mem8.subarray(vramPtr, vramPtr + (w * h));
-    const pal = new Uint8Array(wasmMemory.buffer, palPtr, 1024); // 256 colors * 4 bytes
+    // Read RGB565 from WebAssembly memory
+    const mem16 = new Uint16Array(wasmMemory.buffer, vramPtr, w * h);
     
     const data = imageDataCache.data;
     let outIdx = 0;
 
-    for (let i = 0; i < fb.length; i++) {
-        const colorIdx = fb[i] * 4;
-        // Assume the 4 bytes in palette memory are [ R, G, B, A ] if array is byte-addressed?
-        // JS TypedArrays in Little Endian mapping: Wait, let's just copy bytes.
-        // Assuming the game memory is Little-Endian and the palette integer is 0xAARRGGBB?
-        // Actually, looking at `image_palette[256] = { 0x800000ff, ... }`
-        // In little endian memory, 0x800000ff is:
-        // Byte 0: 0xFF (A? or blue?)
-        // Byte 1: 0x00
-        // Byte 2: 0x00
-        // Byte 3: 0x80
-        // Let's read as 32-bit ints from memory:
+    for (let i = 0; i < mem16.length; i++) {
+        const color = mem16[i];
         
-        // Simpler: Just extract them:
-        // Using Uint32Array on palette avoids endianness confusion if we shift
+        // Extract RGB565
+        const r = (color >> 11) & 0x1F;
+        const g = (color >> 5) & 0x3F;
+        const b = color & 0x1F;
         
-        const r = pal[colorIdx + 3];
-        const g = pal[colorIdx + 2];
-        const b = pal[colorIdx + 1];
-        const a = pal[colorIdx + 0]; 
-
-        // If the color format is 0xRRGGBBAA, little endian memory stores it as AA BB GG RR
-        // That means: pal[+0] = AA, pal[+1] = BB, pal[+2] = GG, pal[+3] = RR
-        // So R=pal[+3], G=[+2], B=[+1] A=[+0].
-        
-        data[outIdx++] = r;
-        data[outIdx++] = g;
-        data[outIdx++] = b;
-        data[outIdx++] = 255; // Force opaque alpha for canvas unless it needs transparency
+        // Scale to 8-bit
+        data[outIdx++] = (r << 3) | (r >> 2);
+        data[outIdx++] = (g << 2) | (g >> 4);
+        data[outIdx++] = (b << 3) | (b >> 2);
+        data[outIdx++] = 255; 
     }
 
     ctx.putImageData(imageDataCache, 0, 0);

@@ -12,7 +12,7 @@ all: convert $(TARGET_WASM)
 convert: $(HEADER_IMAGE)
 
 $(HEADER_IMAGE): $(INPUT_IMAGE)
-	../../tools/img2fb.sh $(INPUT_IMAGE) palette.hex image
+	../../tools/img2fb.sh $(INPUT_IMAGE) image
 
 $(TARGET_WASM): main.c $(HEADER_IMAGE)
 	$(PAPAGAIOCC) main.c -o $(TARGET_WASM) -I$(shell pwd)

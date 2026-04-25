@@ -58,12 +58,20 @@ window.addEventListener('keydown', (e) => {
         gamepadButtons |= keyMap[e.key];
         e.preventDefault();
     }
+    if (wasmMemory && sysOffset !== 0) {
+        const memoryView = new DataView(wasmMemory.buffer);
+        memoryView.setUint8(sysOffset + 56 + (e.keyCode & 0xFF), 1);
+    }
 });
 
 window.addEventListener('keyup', (e) => {
     if (keyMap[e.key]) {
         gamepadButtons &= ~keyMap[e.key];
         e.preventDefault();
+    }
+    if (wasmMemory && sysOffset !== 0) {
+        const memoryView = new DataView(wasmMemory.buffer);
+        memoryView.setUint8(sysOffset + 56 + (e.keyCode & 0xFF), 0);
     }
 });
 

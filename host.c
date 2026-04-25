@@ -32,6 +32,7 @@ typedef struct {
     int32_t  joystick_ly;
     int32_t  joystick_rx;
     int32_t  joystick_ry;
+    uint8_t  keys[256];
 } SystemConfig;
 
 #define BTN_UP     (1 << 0)
@@ -244,6 +245,12 @@ int main(int argc, char** argv) {
             if (e.type == SDL_QUIT) running = 0;
             if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
                 int down = (e.type == SDL_KEYDOWN);
+                
+                // Map to 256 keys array via physical scancode
+                if (e.key.keysym.scancode < 256) {
+                    sys->keys[e.key.keysym.scancode] = down ? 1 : 0;
+                }
+
                 uint32_t bit = 0;
                 switch (e.key.keysym.sym) {
                     case SDLK_UP:     bit = BTN_UP; break;

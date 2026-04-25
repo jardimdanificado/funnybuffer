@@ -25,6 +25,7 @@ typedef struct {
     int32_t  joystick_ly;
     int32_t  joystick_rx;     
     int32_t  joystick_ry;
+    uint8_t  keys[256];
 } SystemConfig;
 
 #define BTN_UP     (1 << 0)

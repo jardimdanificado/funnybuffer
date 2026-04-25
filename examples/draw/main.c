@@ -15,6 +15,7 @@ typedef struct {
     uint32_t width, height, ram, vram, ram_ptr, vram_ptr, pal_ptr, fb_dirty, pal_dirty;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
+    uint8_t  keys[256];
 } SystemConfig;
 
 typedef struct {

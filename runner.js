@@ -27,7 +27,7 @@ let wasmInstance = null;
 let wasmMemory = null;
 let loopId = null;
 
-// System Config Offset (determined via papagaio_system)
+// System Config Offset is predictable (always 0)
 let sysOffset = 0;
 
 // Host imported functions
@@ -60,7 +60,7 @@ window.addEventListener('keydown', (e) => {
     }
     if (wasmMemory && sysOffset !== 0) {
         const memoryView = new DataView(wasmMemory.buffer);
-        memoryView.setUint8(sysOffset + 48 + (e.keyCode & 0xFF), 1);
+        memoryView.setUint8(sysOffset + 40 + (e.keyCode & 0xFF), 1);
     }
 });
 
@@ -71,7 +71,7 @@ window.addEventListener('keyup', (e) => {
     }
     if (wasmMemory && sysOffset !== 0) {
         const memoryView = new DataView(wasmMemory.buffer);
-        memoryView.setUint8(sysOffset + 48 + (e.keyCode & 0xFF), 0);
+        memoryView.setUint8(sysOffset + 40 + (e.keyCode & 0xFF), 0);
     }
 });
 
@@ -124,13 +124,15 @@ function startEngine() {
         wasmInstance.exports.papagaio_init();
     }
 
-    // Get system config ptr
-    sysOffset = wasmInstance.exports.papagaio_system();
+    // Get system config ptr (predictable layout)
+    sysOffset = 0;
 
     // Check memory requirements and grow if necessary (replicating host.c)
     const dv = new DataView(wasmMemory.buffer);
     const ram = dv.getUint32(sysOffset + 8, true);
-    const ramPtr = dv.getUint32(sysOffset + 16, true);
+    const vram = dv.getUint32(sysOffset + 12, true);
+    const vramPtr = 296; // sizeof(SystemConfig)
+    const ramPtr = vramPtr + vram;
     const totalNeeded = ramPtr + ram;
     const requiredPages = Math.floor((totalNeeded + 65535) / 65536);
     const currentPages = wasmMemory.buffer.byteLength / 65536;
@@ -161,25 +163,25 @@ function gameLoop() {
     const memoryView = new DataView(wasmMemory.buffer);
     
     // Inject gamepad inputs
-    memoryView.setUint32(sysOffset + 28, gamepadButtons, true);
+    memoryView.setUint32(sysOffset + 20, gamepadButtons, true);
 
     // Call Update
     wasmInstance.exports.papagaio_update();
 
     // Check Dirty flags
-    const fbDirty = memoryView.getUint32(sysOffset + 24, true);
+    const redraw = memoryView.getUint32(sysOffset + 16, true);
     
-    if (fbDirty) {
+    if (redraw) {
         renderFrame(memoryView);
         // Clear dirty flag
-        memoryView.setUint32(sysOffset + 24, 0, true);
+        memoryView.setUint32(sysOffset + 16, 0, true);
     }
 }
 
 function renderFrame(memoryView) {
     const w = memoryView.getUint32(sysOffset + 0, true);
     const h = memoryView.getUint32(sysOffset + 4, true);
-    const vramPtr = memoryView.getUint32(sysOffset + 20, true);
+    const vramPtr = 296; // sizeof(SystemConfig)
 
     // Create or reuse ImageData
     if (!imageDataCache || imageDataCache.width !== w || imageDataCache.height !== h) {

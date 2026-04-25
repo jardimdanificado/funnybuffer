@@ -12,9 +12,7 @@ typedef struct {
     uint32_t height;
     uint32_t ram;         
     uint32_t vram;        
-    uint32_t ram_ptr;     
-    uint32_t vram_ptr;    
-    uint32_t fb_dirty;    
+    uint32_t redraw;    
 
     uint32_t gamepad_buttons; 
     int32_t  joystick_lx;     
@@ -298,10 +296,6 @@ void draw_tile(int tile_idx, int tx, int ty) {
     }
 }
 
-uint32_t papagaio_system(void) {
-    return (uint32_t)_sys;
-}
-
 void reset_game(void) {
     current_level = 1;
     game_state = STATE_PLAYING;
@@ -315,12 +309,9 @@ void papagaio_init(void) {
     _sys->height   = 240;
     _sys->ram      = 65536 * 4; 
     _sys->vram     = 320 * 240 * 2;
-    _sys->fb_dirty = 0;
+    _sys->redraw   = 0;
 
-    _sys->vram_ptr   = (uint32_t)&__heap_base + sizeof(SystemConfig);
-    _sys->ram_ptr    = _sys->vram_ptr + _sys->vram;
-
-    _fb = (uint16_t*)_sys->vram_ptr;
+    _fb = (uint16_t*)((uint32_t)&__heap_base + sizeof(SystemConfig));
     
     reset_game();
 }
@@ -337,7 +328,7 @@ void papagaio_update(void) {
         if (pressed & BTN_START) {
             reset_game(); 
         }
-        _sys->fb_dirty = 1;
+        _sys->redraw = 1;
         return;
     }
 
@@ -351,7 +342,7 @@ void papagaio_update(void) {
                 idx++;
             }
         }
-        _sys->fb_dirty = 1;
+        _sys->redraw = 1;
         return;
     }
 
@@ -434,5 +425,5 @@ void papagaio_update(void) {
         draw_rect(10, 10, current_hp * 6, 12, RGB565(0, 255, 0));
     }
 
-    _sys->fb_dirty = 1;
+    _sys->redraw = 1;
 }

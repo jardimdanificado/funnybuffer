@@ -8,16 +8,14 @@ extern unsigned char __heap_base;
 typedef struct {
     uint32_t width;
     uint32_t height;
-    uint32_t ram;         
-    uint32_t vram;        
-    uint32_t ram_ptr;     
-    uint32_t vram_ptr;    
-    uint32_t fb_dirty;    
+    uint32_t ram;
+    uint32_t vram;
+    uint32_t redraw;
 
     uint32_t gamepad_buttons; 
-    int32_t  joystick_lx;     
+    int32_t  joystick_lx;
     int32_t  joystick_ly;
-    int32_t  joystick_rx;     
+    int32_t  joystick_rx;
     int32_t  joystick_ry;
     uint8_t  keys[256];
 } SystemConfig;
@@ -37,10 +35,6 @@ void draw_rect(int x, int y, int w, int h, uint16_t color) {
     }
 }
 
-uint32_t papagaio_system(void) {
-    return (uint32_t)_sys;
-}
-
 void papagaio_init(void) {
     _sys = (SystemConfig*)&__heap_base;
 
@@ -48,11 +42,9 @@ void papagaio_init(void) {
     _sys->height = 240;
     _sys->vram   = 320 * 240 * 2;
     _sys->ram    = 1024 * 512;
+    _sys->redraw = 0;
 
-    _sys->vram_ptr = (uint32_t)&__heap_base + sizeof(SystemConfig);
-    _sys->ram_ptr  = _sys->vram_ptr + _sys->vram;
-
-    _fb = (uint16_t*)_sys->vram_ptr;
+    _fb = (uint16_t*)((uint32_t)&__heap_base + sizeof(SystemConfig));
 }
 
 void papagaio_update(void) {
@@ -85,5 +77,5 @@ void papagaio_update(void) {
         draw_rect(px, py, cell_w - 1, cell_h - 1, col);
     }
 
-    _sys->fb_dirty = 1;
+    _sys->redraw = 1;
 }

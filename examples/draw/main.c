@@ -12,7 +12,7 @@ extern unsigned char __heap_base;
 extern uint32_t get_ticks();
 
 typedef struct {
-    uint32_t width, height, ram, vram, ram_ptr, vram_ptr, fb_dirty;
+    uint32_t width, height, ram, vram, redraw;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
     uint8_t  keys[256];
@@ -68,9 +68,7 @@ void papagaio_init(void) {
     _sys->vram   = 320 * 240 * 2;
     _sys->ram    = 1024 * 512;
 
-    _sys->vram_ptr = (uint32_t)&__heap_base + sizeof(SystemConfig);
-    _sys->ram_ptr  = _sys->vram_ptr + _sys->vram;
-    _fb = (uint16_t*)_sys->vram_ptr;
+    _fb = (uint16_t*)((uint32_t)&__heap_base + sizeof(SystemConfig));
 
     _oc = olivec_canvas(_fb, 320, 240, 320);
     _img_sprite = olivec_canvas((uint16_t*)image_raw, image_width, image_height, image_width);
@@ -118,9 +116,7 @@ void papagaio_update(void) {
     olivec_rect(_oc, 5, 220, 80, 15, RGB565(0, 0, 0)); // Fundo do texto
     olivec_text(_oc, _fps_text, 10, 222, olivec_default_font, 1, RGB565(255, 255, 255));
     
-    _sys->fb_dirty = 1;
+    _sys->redraw = 1;
 }
 
-uint32_t papagaio_system(void) {
-    return (uint32_t)_sys;
-}
+

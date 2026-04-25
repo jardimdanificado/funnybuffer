@@ -20,9 +20,7 @@ typedef struct {
     uint32_t height;
     uint32_t ram;
     uint32_t vram;
-    uint32_t ram_ptr;
-    uint32_t vram_ptr;
-    uint32_t fb_dirty;
+    uint32_t redraw;
     
     // ---- Inputs ----
     uint32_t gamepad_buttons;
@@ -145,21 +143,21 @@ int main(int argc, char** argv) {
 
     m3_LinkRawFunction(module, "env", "get_ticks", "i()", host_get_ticks);
 
-    IM3Function fn_init, fn_update, fn_system;
+    IM3Function fn_init, fn_update;
     m3_FindFunction(&fn_init,   runtime, "papagaio_init");
     m3_FindFunction(&fn_update, runtime, "papagaio_update");
-    m3_FindFunction(&fn_system, runtime, "papagaio_system");
 
     m3_CallV(fn_init);
 
     uint32_t sys_wasm_offset = 0;
-    m3_CallV(fn_system);
-    m3_GetResultsV(fn_system, &sys_wasm_offset);
 
     uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
     SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
 
-    uint32_t total_needed   = sys->ram_ptr + sys->ram;
+    uint32_t vram_ptr = sizeof(SystemConfig);
+    uint32_t ram_ptr = vram_ptr + sys->vram;
+    uint32_t total_needed = ram_ptr + sys->ram;
+
     uint32_t required_pages = (total_needed + 65535) / 65536;
     uint32_t current_pages  = m3_GetMemorySize(runtime) / 65536;
     if (required_pages > current_pages)
@@ -167,7 +165,7 @@ int main(int argc, char** argv) {
 
     mem = m3_GetMemory(runtime, NULL, 0);
     sys = (SystemConfig*)(mem + sys_wasm_offset);
-    uint16_t* fb  = (uint16_t*)(mem + sys->vram_ptr);
+    uint16_t* fb  = (uint16_t*)(mem + vram_ptr);
     uint32_t  W   = sys->width, H = sys->height;
 
     SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK);
@@ -265,11 +263,11 @@ int main(int argc, char** argv) {
 
         m3_CallV(fn_update);
 
-        if (sys->fb_dirty) {
+        if (sys->redraw) {
             glActiveTexture(GL_TEXTURE0);
             glBindTexture(GL_TEXTURE_2D, fb_tex);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, fb);
-            sys->fb_dirty = 0;
+            sys->redraw = 0;
         }
 
         glClear(GL_COLOR_BUFFER_BIT);

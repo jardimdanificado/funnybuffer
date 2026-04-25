@@ -9,13 +9,11 @@ typedef          int   int32_t;
 extern unsigned char __heap_base;
 
 typedef struct {
-    uint32_t width;
-    uint32_t height;
+    uint32_t width;       // pixels
+    uint32_t height;      // pixels
     uint32_t ram;         // bytes
     uint32_t vram;        // bytes
-    uint32_t ram_ptr;     // wasm linear memory offset for RAM
-    uint32_t vram_ptr;    // wasm linear memory offset for VRAM (fb)
-    uint32_t fb_dirty;    // set to 1 when fb was written this frame
+    uint32_t redraw;      // set to 1 when fb was written this frame
 
     // ---- Gamepad / Inputs Mapped ----
     uint32_t gamepad_buttons; 
@@ -71,10 +69,6 @@ void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
     }
 }
 
-uint32_t papagaio_system(void) {
-    return (uint32_t)_sys;
-}
-
 void papagaio_init(void) {
     _sys = (SystemConfig*)&__heap_base;
 
@@ -82,12 +76,9 @@ void papagaio_init(void) {
     _sys->height   = 240;
     _sys->ram      = 65536;
     _sys->vram     = 320 * 240 * 2;
-    _sys->fb_dirty = 0;
+    _sys->redraw   = 0;
 
-    _sys->vram_ptr   = (uint32_t)&__heap_base + sizeof(SystemConfig);
-    _sys->ram_ptr    = _sys->vram_ptr + _sys->vram;
-
-    _fb = (uint16_t*)_sys->vram_ptr;
+    _fb = (uint16_t*)((uint32_t)&__heap_base + sizeof(SystemConfig));
 }
 
 static int pos_x = 100;
@@ -124,5 +115,5 @@ void papagaio_update(void) {
     // Desenha a imagem estalando/esticando
     draw_image_scaled(pos_x, pos_y, scale_w, scale_h);
 
-    _sys->fb_dirty = 1;
+    _sys->redraw = 1;
 }

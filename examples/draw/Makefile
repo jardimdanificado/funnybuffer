@@ -1,11 +1,17 @@
+
 TARGET_WASM = game.wasm
-PAPAGAIOCC = ../../papagaio/papagaiocc
 HOST_RUNNER = ../../funnybuffer
+CLANG = clang
+
+# Flags for WASM compilation
+WASM_FLAGS = --target=wasm32-unknown-unknown -ffreestanding -nostdlib \
+             -Wl,--no-entry -Wl,--export=main -Wl,--export-dynamic \
+             -Wl,--allow-undefined -Wl,--global-base=160000
 
 all: $(TARGET_WASM) run
 
 $(TARGET_WASM): main.c olive.c
-	$(PAPAGAIOCC) main.c -o $(TARGET_WASM) -I$(shell pwd) -Wl,--global-base=160000
+	$(CLANG) $(WASM_FLAGS) main.c -o $(TARGET_WASM) -I.
 
 run: $(TARGET_WASM)
 	$(HOST_RUNNER) $(TARGET_WASM)

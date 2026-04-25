@@ -1,44 +1,18 @@
-CC = gcc
-PAPAGAIO_DIR = papagaio
-PAPAGAIOCC = ./$(PAPAGAIO_DIR)/papagaiocc
-WASM3_DIR = $(PAPAGAIO_DIR)/lib/wasm3
-WASM3_SRC = $(WASM3_DIR)/*.c
 
-CFLAGS = -I$(WASM3_DIR) -O2
+CC = gcc
+CFLAGS = -O3 -Wall -I./papagaio/lib/wasm3
 LDFLAGS = -lSDL2 -lGL -lm
 
-TARGET_HOST = funnybuffer
+# List of all necessary Wasm3 source files
+WASM3_SRC = $(wildcard papagaio/lib/wasm3/*.c)
+SRC = host.c $(WASM3_SRC)
 
-.PHONY: all clean papagaio update-papagaio
+TARGET = funnybuffer
 
-all: papagaio $(TARGET_HOST)
-
-papagaio:
-	$(MAKE) -C $(PAPAGAIO_DIR)
-
-update-papagaio:
-	git submodule update --remote --merge
-
-$(TARGET_HOST): host.c | papagaio
-	$(CC) $(CFLAGS) $< $(WASM3_SRC) -o $@ $(LDFLAGS)
-
-CC_AARCH64 = aarch64-linux-gnu-gcc
-CFLAGS_AARCH64 = -Ipapagaio/lib/wasm3 -O2 -DPORTMASTER
-LDFLAGS_AARCH64 = -lSDL2 -lGLESv2 -lm
-
-portmaster: $(TARGET_WASM)
-	mkdir -p funnybuffer
-	@echo "Montando ambiente de Cross-Compile no Docker..."
-	@sudo docker run --rm -e DEBIAN_FRONTEND=noninteractive -v $(PWD):/bld -w /bld ubuntu:20.04 bash -c " \
-		sed -i 's/^deb /deb [arch=amd64] /g' /etc/apt/sources.list && \
-		echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal main restricted universe multiverse' >> /etc/apt/sources.list && \
-		echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal-updates main restricted universe multiverse' >> /etc/apt/sources.list && \
-		dpkg --add-architecture arm64 && apt-get update -qq && \
-		apt-get install -yq --no-install-recommends gcc-aarch64-linux-gnu libsdl2-dev:arm64 libgles2-mesa-dev:arm64 && \
-		$(CC_AARCH64) $(CFLAGS_AARCH64) host.c $(WASM3_SRC) -o funnybuffer/$(TARGET_HOST) $(LDFLAGS_AARCH64) \
-	"
-	@echo "PortMaster build complete! Files are inside funnybuffer/ and funnybuffer.sh"
-	@echo "ZIP the files: zip -r funnybuffer_port.zip funnybuffer funnybuffer.sh"
+$(TARGET): $(SRC)
+	$(CC) $(CFLAGS) $(SRC) -o $(TARGET) $(LDFLAGS)
 
 clean:
-	rm -rf $(TARGET_HOST)
+	rm -f $(TARGET)
+
+.PHONY: all clean

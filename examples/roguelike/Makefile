@@ -4,7 +4,7 @@ CLANG = clang
 
 WASM_FLAGS = --target=wasm32-unknown-unknown -ffreestanding -nostdlib \
              -Wl,--no-entry -Wl,--export=main -Wl,--export-dynamic \
-             -Wl,--allow-undefined -Wl,--global-base=160000
+             -Wl,--allow-undefined -Wl,--global-base=1048576
 
 .PHONY: all clean
 

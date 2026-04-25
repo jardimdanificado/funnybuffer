@@ -40,6 +40,7 @@ typedef struct {
 #define SPRITE_COUNT 200
 static Sprite _sprites[SPRITE_COUNT];
 
+__attribute__((visibility("default")))
 int main() {
     // Inicializa o motor via Host
     init(320, 240, 320 * 240 * 2, 1024 * 512);

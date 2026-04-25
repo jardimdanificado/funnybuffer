@@ -29,6 +29,7 @@ void draw_rect(int x, int y, int w, int h, uint16_t color) {
     }
 }
 
+__attribute__((visibility("default")))
 int main() {
     init(320, 240, 320 * 240 * 2, 1024 * 512);
 

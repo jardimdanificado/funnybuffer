@@ -50,6 +50,7 @@ void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
     }
 }
 
+__attribute__((visibility("default")))
 int main() {
     init(320, 240, 320 * 240 * 2, 65536);
 

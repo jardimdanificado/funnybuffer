@@ -31,18 +31,38 @@ static uint16_t* _fb = (uint16_t*)296;
 static uint8_t _map[MAP_WIDTH * MAP_HEIGHT];
 static int _player_x = 2, _player_y = 2;
 
-void draw_sprite(int x, int y, int id) {
-    const uint16_t* sprite = &image_raw[id * 8 * 8];
+// Desenha um sprite 8x8 de uma imagem 256x256
+void draw_sprite(int screen_x, int screen_y, int id) {
+    // A imagem tem 256 pixels de largura. Cada sprite tem 8x8.
+    // Sprites por linha = 256 / 8 = 32.
+    int sprites_per_row = 32;
+    int sprite_row = id / sprites_per_row;
+    int sprite_col = id % sprites_per_row;
+    
+    int src_x_start = sprite_col * 8;
+    int src_y_start = sprite_row * 8;
+
     for (int j = 0; j < 8; j++) {
+        int sy = screen_y * 8 + j;
+        if (sy < 0 || sy >= 240) continue;
+        
+        int src_y = src_y_start + j;
+        const uint16_t* src_row = &image_raw[src_y * 256];
+        uint16_t* dst_row = &_fb[sy * 320];
+
         for (int i = 0; i < 8; i++) {
-            uint16_t color = sprite[j * 8 + i];
-            if (color != 0x0000) { // Transparency (Black in this case)
-                _fb[(y * 8 + j) * 320 + (x * 8 + i)] = color;
+            int sx = screen_x * 8 + i;
+            if (sx < 0 || sx >= 320) continue;
+
+            uint16_t color = src_row[src_x_start + i];
+            if (color != 0x0000) { // Transparência (Preto)
+                dst_row[sx] = color;
             }
         }
     }
 }
 
+__attribute__((visibility("default")))
 int main() {
     init(320, 240, 320 * 240 * 2, 65536 * 4);
 
@@ -54,7 +74,7 @@ int main() {
 
     while (1) {
         // Clear
-        for (int i = 0; i < 320 * 240; i++) _fb[i] = 0x1082; // Fundo escuro
+        for (int i = 0; i < 320 * 240; i++) _fb[i] = 0x1082;
 
         // Draw Map
         for (int y = 0; y < MAP_HEIGHT; y++) {

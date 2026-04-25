@@ -35,6 +35,11 @@ void draw_rect(int x, int y, int w, int h, uint16_t color) {
     }
 }
 
+__attribute__((visibility("default")))
+void* get_system_config(void) {
+    return (void*)&__heap_base;
+}
+
 void papagaio_init(void) {
     _sys = (SystemConfig*)&__heap_base;
 

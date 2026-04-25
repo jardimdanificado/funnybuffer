@@ -69,6 +69,11 @@ void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
     }
 }
 
+__attribute__((visibility("default")))
+void* get_system_config(void) {
+    return (void*)&__heap_base;
+}
+
 void papagaio_init(void) {
     _sys = (SystemConfig*)&__heap_base;
 

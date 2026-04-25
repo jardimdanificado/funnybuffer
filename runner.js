@@ -53,14 +53,26 @@ const keyMap = {
     'Escape': BTN_SELECT
 };
 
+// SDL-to-JS scancode mapping for the keys[] array
+const scancodeMap = {
+    'ArrowUp': 82,    // SDL_SCANCODE_UP
+    'ArrowDown': 81,  // SDL_SCANCODE_DOWN
+    'ArrowLeft': 80,  // SDL_SCANCODE_LEFT
+    'ArrowRight': 79, // SDL_SCANCODE_RIGHT
+    'Space': 44,      // SDL_SCANCODE_SPACE
+    'Enter': 40,      // SDL_SCANCODE_RETURN
+    'KeyW': 26, 'KeyA': 4, 'KeyS': 22, 'KeyD': 7,
+};
+
 window.addEventListener('keydown', (e) => {
     if (keyMap[e.key]) {
         gamepadButtons |= keyMap[e.key];
         e.preventDefault();
     }
-    if (wasmMemory && sysOffset !== 0) {
+    if (wasmMemory && sysOffset !== null) {
         const memoryView = new DataView(wasmMemory.buffer);
-        memoryView.setUint8(sysOffset + 40 + (e.keyCode & 0xFF), 1);
+        const code = scancodeMap[e.code] || (e.keyCode & 0xFF); 
+        memoryView.setUint8(sysOffset + 40 + code, 1);
     }
 });
 
@@ -69,9 +81,10 @@ window.addEventListener('keyup', (e) => {
         gamepadButtons &= ~keyMap[e.key];
         e.preventDefault();
     }
-    if (wasmMemory && sysOffset !== 0) {
+    if (wasmMemory && sysOffset !== null) {
         const memoryView = new DataView(wasmMemory.buffer);
-        memoryView.setUint8(sysOffset + 40 + (e.keyCode & 0xFF), 0);
+        const code = scancodeMap[e.code] || (e.keyCode & 0xFF);
+        memoryView.setUint8(sysOffset + 40 + code, 0);
     }
 });
 
@@ -124,17 +137,20 @@ function startEngine() {
         wasmInstance.exports.papagaio_init();
     }
 
-    // Get system config ptr (predictable layout)
+    // Get system config ptr (predictable layout or dynamic)
     sysOffset = 0;
+    if (wasmInstance.exports.get_system_config) {
+        sysOffset = wasmInstance.exports.get_system_config();
+    }
 
     // Check memory requirements and grow if necessary (replicating host.c)
     const dv = new DataView(wasmMemory.buffer);
     const ram = dv.getUint32(sysOffset + 8, true);
     const vram = dv.getUint32(sysOffset + 12, true);
-    const vramPtr = 296; // sizeof(SystemConfig)
+    const vramPtr = sysOffset + 296; // sizeof(SystemConfig)
     const ramPtr = vramPtr + vram;
     const totalNeeded = ramPtr + ram;
-    const requiredPages = Math.floor((totalNeeded + 65535) / 65536);
+    const requiredPages = Math.ceil(totalNeeded / 65536);
     const currentPages = wasmMemory.buffer.byteLength / 65536;
     
     if (requiredPages > currentPages) {

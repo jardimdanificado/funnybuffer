@@ -302,6 +302,11 @@ void reset_game(void) {
     generate_map();
 }
 
+__attribute__((visibility("default")))
+void* get_system_config(void) {
+    return (void*)&__heap_base;
+}
+
 void papagaio_init(void) {
     _sys = (SystemConfig*)&__heap_base;
 

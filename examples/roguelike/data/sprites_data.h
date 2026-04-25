@@ -2,9 +2,9 @@
 #ifndef IMAGE_DATA_H
 #define IMAGE_DATA_H
 #include <stdint.h>
-static const int image_width = 256;
-static const int image_height = 256;
-static const uint16_t image_raw[] = {
+const int image_width = 256;
+const int image_height = 256;
+const uint16_t image_raw[] = {
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x2800, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
     0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,

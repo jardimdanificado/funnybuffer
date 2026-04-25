@@ -1,21 +1,32 @@
 
-#include "image_data.h"
-
 typedef unsigned char  uint8_t;
 typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 typedef          int   int32_t;
 
-extern void init(int w, int h, int vram, int ram);
-extern void draw();
-extern uint32_t get_ticks();
+#include "image_data.h"
 
+extern void init(int w, int h, int vram, int ram);
+
+#pragma pack(push, 1)
 typedef struct {
-    uint32_t width, height, ram, vram, redraw;
-    uint32_t gamepad_buttons;
-    int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
+    uint32_t width;
+    uint32_t height;
+    uint32_t ram;
+    uint32_t vram;
+    uint32_t redraw;
+
+    uint32_t gamepad_buttons; 
+    int32_t  joystick_lx;     
+    int32_t  joystick_ly;
+    int32_t  joystick_rx;     
+    int32_t  joystick_ry;
     uint8_t  keys[256];
 } SystemConfig;
+#pragma pack(pop)
+
+#define _sys ((volatile SystemConfig*)0)
+#define _fb ((volatile uint16_t*)296)
 
 #define BTN_UP     (1 << 0)
 #define BTN_DOWN   (1 << 1)
@@ -28,10 +39,7 @@ typedef struct {
 #define BTN_L2     (1 << 12)
 #define BTN_R2     (1 << 13)
 
-static SystemConfig* _sys = (SystemConfig*)0;
-static uint16_t* _fb = (uint16_t*)296;
-
-static const uint16_t* pixels_ptr = (const uint16_t*)image_raw;
+#define pixels_ptr ((const uint16_t*)image_raw)
 
 void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
     if (dest_w <= 0 || dest_h <= 0) return;
@@ -50,31 +58,35 @@ void draw_image_scaled(int dest_x, int dest_y, int dest_w, int dest_h) {
     }
 }
 
+static int pos_x = 100;
+static int pos_y = 70;
+static int scale_w = 120;
+static int scale_h = 100;
+
 __attribute__((visibility("default")))
 int main() {
-    init(320, 240, 320 * 240 * 2, 65536);
-
-    int pos_x = 100, pos_y = 70;
-    int scale_w = 120, scale_h = 100;
-
-    while (1) {
-        // Limpa tela
-        for (int i = 0; i < 320 * 240; i++) _fb[i] = 0x3186; // Fundo azulado
-
-        // Movimentação via setas ou gamepad
-        if (_sys->keys[79] || (_sys->gamepad_buttons & BTN_RIGHT)) pos_x += 2;
-        if (_sys->keys[80] || (_sys->gamepad_buttons & BTN_LEFT))  pos_x -= 2;
-        if (_sys->keys[81] || (_sys->gamepad_buttons & BTN_DOWN))  pos_y += 2;
-        if (_sys->keys[82] || (_sys->gamepad_buttons & BTN_UP))    pos_y -= 2;
-
-        // Escala via L1/R1
-        if (_sys->gamepad_buttons & BTN_L1) { scale_w -= 2; scale_h -= 2; }
-        if (_sys->gamepad_buttons & BTN_R1) { scale_w += 2; scale_h += 2; }
-
-        draw_image_scaled(pos_x, pos_y, scale_w, scale_h);
-        
-        _sys->redraw = 1;
-        draw();
+    if (_sys->width == 0) {
+        init(320, 240, 320 * 240 * 2, 65536);
     }
+
+    for (int i=0; i<(int)(_sys->width*_sys->height); i++) _fb[i] = 0;
+
+    if (_sys->gamepad_buttons & BTN_LEFT)  pos_x -= 2;
+    if (_sys->gamepad_buttons & BTN_RIGHT) pos_x += 2;
+    if (_sys->gamepad_buttons & BTN_UP)    pos_y -= 2;
+    if (_sys->gamepad_buttons & BTN_DOWN)  pos_y += 2;
+
+    if (_sys->gamepad_buttons & BTN_L1) scale_w -= 2;
+    if (_sys->gamepad_buttons & BTN_R1) scale_w += 2;
+    if (_sys->gamepad_buttons & BTN_L2) scale_h -= 2;
+    if (_sys->gamepad_buttons & BTN_R2) scale_h += 2;
+
+    if (_sys->gamepad_buttons & BTN_A) {
+        scale_w = image_width;
+        scale_h = image_height;
+    }
+
+    draw_image_scaled(pos_x, pos_y, scale_w, scale_h);
+    _sys->redraw = 1;
     return 0;
 }

@@ -25,7 +25,8 @@ target_link_libraries(wagnostic PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(wagnostic PRIVATE opengl32)
+    find_package(GLEW REQUIRED)
+    target_link_libraries(wagnostic PRIVATE GLEW::GLEW opengl32)
 else()
     target_link_libraries(wagnostic PRIVATE GL m)
 endif()

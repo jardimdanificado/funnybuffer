@@ -7,6 +7,9 @@
 #include <SDL2/SDL.h>
 #ifdef PORTMASTER
 #include <SDL2/SDL_opengles2.h>
+#elif defined(_WIN32) && defined(_MSC_VER)
+#include <GL/glew.h>
+#include <SDL2/SDL_opengl.h>
 #else
 #define GL_GLEXT_PROTOTYPES 1
 #include <SDL2/SDL_opengl.h>
@@ -318,6 +321,14 @@ int main(int argc, char** argv) {
     
     gl_ctx = SDL_GL_CreateContext(window);
     SDL_GL_SetSwapInterval(1);
+#if defined(_WIN32) && defined(_MSC_VER)
+    glewExperimental = GL_TRUE;
+    GLenum glew_err = glewInit();
+    if (glew_err != GLEW_OK) {
+        fprintf(stderr, "GLEW init error: %s\n", glewGetErrorString(glew_err));
+        return 1;
+    }
+#endif
     glViewport(0, 0, 640, 480);
 
     GLuint prog = build_program();

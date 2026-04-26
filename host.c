@@ -30,6 +30,17 @@ typedef struct {
     int32_t  joystick_rx;
     int32_t  joystick_ry;
     uint8_t  keys[256];
+    
+    // ---- Mouse ----
+    int32_t  mouse_x;
+    int32_t  mouse_y;
+    uint32_t mouse_buttons;
+    int32_t  mouse_wheel;
+
+    // ---- Metadata & Future ----
+    char     title[128];   // Offset 312
+    uint32_t bpp;          // Offset 440 (Bits per pixel: 1, 2, 4)
+    uint8_t  reserved[68]; // Padding to reach 512 bytes
 } SystemConfig;
 #pragma pack(pop)
 
@@ -148,7 +159,8 @@ m3ApiRawFunction(host_init) {
         glViewport(0, 0, W * scale, H * scale);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, fb_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, W, H, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, NULL);
+        // Use RGBA8 as internal format for maximum flexibility
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     }
 
     m3ApiSuccess();
@@ -204,7 +216,7 @@ int main(int argc, char** argv) {
     }
 
     // Create window immediately with a placeholder size
-    window = SDL_CreateWindow("funnybuffer", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 640, 480, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("Wagnostic", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 640, 480, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
     if (!window) { fprintf(stderr, "SDL_CreateWindow error: %s\n", SDL_GetError()); return 1; }
     
     gl_ctx = SDL_GL_CreateContext(window);
@@ -240,10 +252,18 @@ int main(int argc, char** argv) {
     int running = 1;
     SDL_Event event;
     uint32_t last_time = SDL_GetTicks();
+    char last_title[128] = {0};
+
     while (running) {
         uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
         if (!mem) { SDL_Delay(10); continue; }
         SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
+
+        // Update window title if changed in WASM memory (offset 312)
+        if (sys->title[0] != '\0' && strcmp(sys->title, last_title) != 0) {
+            strncpy(last_title, sys->title, 127);
+            SDL_SetWindowTitle(window, last_title);
+        }
 
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_QUIT) running = 0;
@@ -266,6 +286,22 @@ int main(int argc, char** argv) {
                 }
                 if (bit) { if (down) sys->gamepad_buttons |= bit; else sys->gamepad_buttons &= ~bit; }
             }
+            if (event.type == SDL_MOUSEMOTION) {
+                int ww, wh;
+                SDL_GetWindowSize(window, &ww, &wh);
+                if (ww > 0 && wh > 0) {
+                    sys->mouse_x = (event.motion.x * W) / ww;
+                    sys->mouse_y = (event.motion.y * H) / wh;
+                }
+            }
+            if (event.type == SDL_MOUSEBUTTONDOWN || event.type == SDL_MOUSEBUTTONUP) {
+                int down = (event.type == SDL_MOUSEBUTTONDOWN);
+                uint32_t bit = (1 << (event.button.button - 1));
+                if (down) sys->mouse_buttons |= bit; else sys->mouse_buttons &= ~bit;
+            }
+            if (event.type == SDL_MOUSEWHEEL) {
+                sys->mouse_wheel += event.wheel.y;
+            }
         }
 
         if (fn_frame) {
@@ -279,12 +315,41 @@ int main(int argc, char** argv) {
         mem = m3_GetMemory(runtime, NULL, 0);
         if (mem) {
             sys = (SystemConfig*)(mem + sys_wasm_offset);
-            uint16_t* fb = (uint16_t*)(mem + 296);
+            uint8_t* fb = mem + 512;
 
             if (fb_tex && W > 0 && H > 0) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, fb_tex);
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, fb);
+
+                if (sys->bpp == 4) {
+                    // 32bpp: Direct upload
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, fb);
+                } else if (sys->bpp == 1) {
+                    // 8bpp (RGB332): Convert to 32bpp
+                    static uint32_t* temp_fb32 = NULL;
+                    temp_fb32 = realloc(temp_fb32, W * H * 4);
+                    for(int i=0; i<W*H; i++) {
+                        uint8_t c = fb[i];
+                        uint8_t r = ((c >> 5) & 0x07) * 255 / 7;
+                        uint8_t g = ((c >> 2) & 0x07) * 255 / 7;
+                        uint8_t b = (c & 0x03) * 255 / 3;
+                        temp_fb32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+                    }
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, temp_fb32);
+                } else {
+                    // Default 16bpp (RGB565): Convert to 32bpp
+                    static uint32_t* temp_fb32 = NULL;
+                    temp_fb32 = realloc(temp_fb32, W * H * 4);
+                    uint16_t* fb16 = (uint16_t*)fb;
+                    for(int i=0; i<W*H; i++) {
+                        uint16_t c = fb16[i];
+                        uint8_t r = ((c >> 11) & 0x1F) * 255 / 31;
+                        uint8_t g = ((c >> 5) & 0x3F) * 255 / 63;
+                        uint8_t b = (c & 0x1F) * 255 / 31;
+                        temp_fb32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+                    }
+                    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, temp_fb32);
+                }
             }
             
             glClear(GL_COLOR_BUFFER_BIT);

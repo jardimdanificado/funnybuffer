@@ -1,9 +1,9 @@
 #!/bin/bash
 
 show_help() {
-    echo "Usage: $0 <input_image> [output_prefix]"
+    echo "Usage: $0 <input_image> [output_prefix] [bpp: 8|16|32]"
+    echo "Default BPP is 16."
     echo "Output: <output_prefix>.raw and <output_prefix>_data.h"
-    echo "This tool converts images to 16-bit RGB565."
     exit 1
 }
 
@@ -11,6 +11,14 @@ if [ "$#" -lt 1 ]; then show_help; fi
 
 IN="$1"
 PREFIX="${2:-image}"
+BPP="${3:-16}"
+
+case $BPP in
+    8)  FMT="rgb332";;
+    16) FMT="rgb565le";;
+    32) FMT="rgba";;
+    *)  echo "Invalid BPP: $BPP. Use 8, 16 or 32."; exit 1;;
+esac
 
 RAW_OUT="${PREFIX}.raw"
 HEADER_OUT="${PREFIX}_data.h"
@@ -29,8 +37,8 @@ if [ -z "$W" ] || [ -z "$H" ]; then
     exit 1
 fi
 
-echo "--- Converting image to RGB565 ---"
-ffmpeg -v error -i "$IN" -f rawvideo -pix_fmt rgb565le -y "$TMP_DIR/raw.tmp"
+echo "--- Converting image to $FMT ($BPP bpp) ---"
+ffmpeg -v error -i "$IN" -f rawvideo -pix_fmt "$FMT" -y "$TMP_DIR/raw.tmp"
 if [ ! -f "$TMP_DIR/raw.tmp" ]; then
     echo "Error failed to convert image."
     exit 1
@@ -46,6 +54,7 @@ echo "--- Generating $HEADER_OUT ---"
     echo "#define IMAGE_DATA_H"
     echo "static const int image_width = $W;"
     echo "static const int image_height = $H;"
+    echo "static const int image_bpp = $BPP / 8;"
     echo "static const unsigned char image_raw[] = {"
     
     xxd -i < "$RAW_OUT"
@@ -54,4 +63,4 @@ echo "--- Generating $HEADER_OUT ---"
     echo "#endif"
 } > "$HEADER_OUT"
 
-echo "Done! Generated $RAW_OUT and $HEADER_OUT ($W x $H)."
+echo "Done! Generated $RAW_OUT and $HEADER_OUT ($W x $H at $BPP bpp)."

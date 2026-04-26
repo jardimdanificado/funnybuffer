@@ -1,19 +1,19 @@
-# Funnybuffer Engine
+# Wagnostic
 
-Funnybuffer is a minimalist WebAssembly-based game engine designed to run binary cartridges (`.wasm`). It uses the **Wasm3** interpreter for execution and **SDL2** with OpenGL for hardware-accelerated rendering.
+**Wagnostic** is a minimalist real-time framebuffer and input communication protocol based on shared memory. It defines a standard interface between a **Host** (executor) and a **Cartridge** (WebAssembly) for 16-bit graphical rendering and peripheral handling.
 
-## Supported Platforms
-- **Native Desktop:** Linux, Windows, macOS (OpenGL 2.1).
-- **Handheld Devices (R36S / ARM64):** Native execution via PortMaster (OpenGLES 2.0).
-- **Web:** Browser-based runner via WebAssembly.
+## Characteristics
+- **Agnostic**: The protocol does not dictate how the application should be written, only how it communicates.
+- **Efficient**: Uses a Shared Memory Model for zero-copy inputs and direct access to the video buffer.
+- **Portable**: Host implementations available for Desktop (C/SDL2), Handhelds (PortMaster), and Web (JavaScript).
 
 ---
 
 ## Architecture
 
-The engine follows a simple shared-memory model:
-1. **The Host (`host.c`):** A native binary that manages the window, inputs, and the Wasm3 VM.
-2. **The Cartridge:** A `.wasm` module containing the game logic and rendering.
+The protocol is based on two primary components:
+1. **The Host:** Responsible for window management, capturing hardware inputs, and instantiating the WebAssembly VM.
+2. **The Cartridge:** A `.wasm` module that implements the logic and writes directly to the framebuffer memory.
 
 ### Memory Map
 The cartridge access hardware state through a shared memory structure located at the beginning of the WASM memory (offset `0`):
@@ -22,13 +22,26 @@ The cartridge access hardware state through a shared memory structure located at
 |--------|------|-------|-------------|
 | 0      | 4    | `width` | Screen width in pixels |
 | 4      | 4    | `height`| Screen height in pixels |
-| 8      | 4    | `ram`   | Reserved RAM size |
-| 12     | 4    | `vram`  | Reserved VRAM size |
+| 8      | 4    | `ram`   | Reserved RAM size (hint for host) |
+| 12     | 4    | `vram`  | Reserved VRAM size (hint for host) |
 | 16     | 4    | `redraw`| Set to 1 by cartridge to request a frame redraw |
 | 20     | 4    | `gamepad_buttons` | Bitmask of active buttons |
 | 24     | 16   | `joysticks` | 4x int32 for L/R sticks axes |
 | 40     | 256  | `keys` | Array of 256 bytes for keyboard scancodes (1=down) |
-| **296**| -    | **VRAM** | **RGB565 Framebuffer** (16-bit per pixel) |
+| 296    | 4    | `mouse_x` | Mouse X coordinate |
+| 300    | 4    | `mouse_y` | Mouse Y coordinate |
+| 304    | 4    | `mouse_buttons` | Bitmask for mouse buttons (L, R, M...) |
+| 308    | 4    | `mouse_wheel` | Mouse wheel vertical scroll |
+| 312    | 128  | `title` | Window Title (UTF-8 Null-terminated) |
+| **440**| **4** | **`bpp`** | **Bits Per Pixel: 1 (8bpp), 2 (16bpp), 4 (32bpp)** |
+| 444    | 68   | `reserved` | Reserved for future protocol expansion |
+| **512**| -    | **VRAM** | **Framebuffer (Layout depends on `bpp`)** |
+| `512 + vram_size` | - | **RAM** | **General purpose cartridge RAM (Heap)** |
+
+### Supported Pixel Formats
+- **1 (8bpp)**: RGB332 (3 bits Red, 3 bits Green, 2 bits Blue).
+- **2 (16bpp)**: RGB565 (5 bits Red, 6 bits Green, 5 bits Blue). **[Default]**
+- **4 (32bpp)**: RGBA8888 (8 bits per channel, Alpha is ignored by host).
 
 ---
 
@@ -72,12 +85,12 @@ make
 
 ### Execution
 ```bash
-# Usage: ./funnybuffer <cartridge.wasm> [render_scale]
-./funnybuffer game.wasm 4
+# Usage: ./wagnostic <cartridge.wasm> [render_scale]
+./wagnostic game.wasm 4
 ```
 
 ### PortMaster Export (ARM64)
 ```bash
 make portmaster
 ```
-This generates the `funnybuffer/` directory and `funnybuffer.sh` for deployment on handheld devices like the R36S.
+This generates the `wagnostic/` directory and `wagnostic.sh` for deployment on handheld devices like the R36S.

@@ -1,5 +1,7 @@
 *.wasm
 *.wat
-funnybuffer
+wagnostic
 *.o
 *.a
+wagnostic.sh
+wagnostic/

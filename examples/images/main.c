@@ -6,27 +6,33 @@ typedef          int   int32_t;
 
 #include "image_data.h"
 
-extern void init(int w, int h, int vram, int ram);
+extern void init(const char* title, int w, int h, int bpp, int scale, int audio_size, int audio_rate, int audio_bpp);
 
 #pragma pack(push, 1)
 typedef struct {
+    char     title[128];
     uint32_t width;
     uint32_t height;
-    uint32_t ram;
-    uint32_t vram;
+    uint32_t bpp;
+    uint32_t scale;
+    uint32_t audio_size;
+    uint32_t audio_write_ptr;
+    uint32_t audio_read_ptr;
+    uint32_t audio_sample_rate;
+    uint32_t audio_bpp;
     uint32_t redraw;
-
-    uint32_t gamepad_buttons; 
-    int32_t  joystick_lx;     
-    int32_t  joystick_ly;
-    int32_t  joystick_rx;     
-    int32_t  joystick_ry;
+    uint32_t gamepad_buttons;
+    int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
     uint8_t  keys[256];
+    int32_t  mouse_x, mouse_y;
+    uint32_t mouse_buttons;
+    int32_t  mouse_wheel;
+    uint8_t  reserved[52];
 } SystemConfig;
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
-#define _fb ((volatile uint16_t*)296)
+#define _fb ((volatile uint16_t*)512)
 
 #define BTN_UP     (1 << 0)
 #define BTN_DOWN   (1 << 1)
@@ -66,7 +72,7 @@ static int scale_h = 100;
 __attribute__((visibility("default")))
 int main() {
     if (_sys->width == 0) {
-        init(320, 240, 320 * 240 * 2, 65536);
+        init("Wagnostic - Images Example", 320, 240, 16, 4, 0, 0, 0);
     }
 
     for (int i=0; i<(int)(_sys->width*_sys->height); i++) _fb[i] = 0;

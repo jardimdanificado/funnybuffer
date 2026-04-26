@@ -4,14 +4,20 @@ typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 typedef          int   int32_t;
 
-extern void init(int w, int h, int vram, int ram);
+extern void init(const char* title, int w, int h, int bpp, int scale, int audio_size, int audio_rate, int audio_bpp);
 
 #pragma pack(push, 1)
 typedef struct {
+    char     title[128];
     uint32_t width;
     uint32_t height;
-    uint32_t ram;
-    uint32_t vram;
+    uint32_t bpp;
+    uint32_t scale;
+    uint32_t audio_size;
+    uint32_t audio_write_ptr;
+    uint32_t audio_read_ptr;
+    uint32_t audio_sample_rate;
+    uint32_t audio_bpp;
     uint32_t redraw;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
@@ -19,9 +25,7 @@ typedef struct {
     int32_t  mouse_x, mouse_y;
     uint32_t mouse_buttons;
     int32_t  mouse_wheel;
-    char     title[128];
-    uint32_t bpp;
-    uint8_t  reserved[68];
+    uint8_t  reserved[52];
 } SystemConfig;
 #pragma pack(pop)
 
@@ -30,15 +34,9 @@ typedef struct {
 
 #define RGBA(r, g, b, a) (uint32_t)((a << 24) | (b << 16) | (g << 8) | r)
 
-void str_cpy(char* dst, const char* src) {
-    while((*dst++ = *src++));
-}
-
 int main() {
     if (_sys->width == 0) {
-        _sys->bpp = 4; // Set BPP BEFORE init
-        init(320, 240, 320 * 240 * 4, 0);
-        str_cpy((char*)_sys->title, "wagnostic - 32bpp RGBA8888 Mode");
+        init("Wagnostic - 32bpp RGBA8888 Mode", 320, 240, 32, 4, 0, 0, 0);
     }
 
     // Fill background

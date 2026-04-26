@@ -17,30 +17,36 @@
 
 #pragma pack(push, 1)
 typedef struct {
-    uint32_t width;
-    uint32_t height;
-    uint32_t ram;
-    uint32_t vram;
-    uint32_t redraw;
+    char     title[128];        // Offset 0
+    uint32_t width;             // Offset 128
+    uint32_t height;            // Offset 132
+    uint32_t bpp;               // Offset 136
+    uint32_t scale;             // Offset 140
+    
+    // ---- Audio ----
+    uint32_t audio_size;        // Offset 144
+    uint32_t audio_write_ptr;   // Offset 148
+    uint32_t audio_read_ptr;    // Offset 152
+    uint32_t audio_sample_rate; // Offset 156
+    uint32_t audio_bpp;         // Offset 160
+
+    uint32_t redraw;            // Offset 164
     
     // ---- Inputs ----
-    uint32_t gamepad_buttons;
-    int32_t  joystick_lx;
+    uint32_t gamepad_buttons;   // Offset 168
+    int32_t  joystick_lx;       // Offset 172
     int32_t  joystick_ly;
     int32_t  joystick_rx;
     int32_t  joystick_ry;
-    uint8_t  keys[256];
+    uint8_t  keys[256];         // Offset 188
     
     // ---- Mouse ----
-    int32_t  mouse_x;
-    int32_t  mouse_y;
-    uint32_t mouse_buttons;
-    int32_t  mouse_wheel;
+    int32_t  mouse_x;           // Offset 444
+    int32_t  mouse_y;           // Offset 448
+    uint32_t mouse_buttons;     // Offset 452
+    int32_t  mouse_wheel;       // Offset 456
 
-    // ---- Metadata & Future ----
-    char     title[128];   // Offset 312
-    uint32_t bpp;          // Offset 440 (Bits per pixel: 1, 2, 4)
-    uint8_t  reserved[68]; // Padding to reach 512 bytes
+    uint8_t  reserved[52];      // Offset 460 (to reach 512)
 } SystemConfig;
 #pragma pack(pop)
 
@@ -135,32 +141,112 @@ static uint32_t sys_wasm_offset = 0;
 static SDL_Window* window = NULL;
 static SDL_GLContext gl_ctx = NULL;
 static GLuint fb_tex = 0;
-static int scale = 4;
 static uint32_t W = 0, H = 0;
 
+static SDL_AudioDeviceID audio_dev = 0;
+
+// Ring buffer reader for SDL callback
+static void audio_callback(void* userdata, uint8_t* stream, int len) {
+    memset(stream, 0, len);
+    if (!runtime) return;
+
+    uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
+    if (!mem) return;
+
+    SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
+    if (sys->audio_size == 0) return;
+
+    uint32_t bytes_per_pixel = sys->bpp / 8;
+    uint8_t* audio_buf = mem + 512 + (sys->width * sys->height * bytes_per_pixel);
+    
+    uint32_t r = sys->audio_read_ptr;
+    uint32_t w = sys->audio_write_ptr;
+    uint32_t size = sys->audio_size;
+
+    int available = (w >= r) ? (w - r) : (size - r + w);
+    int to_copy = (len < available) ? len : available;
+
+    if (to_copy > 0) {
+        if (r + to_copy <= size) {
+            memcpy(stream, audio_buf + r, to_copy);
+        } else {
+            int first_part = size - r;
+            memcpy(stream, audio_buf + r, first_part);
+            memcpy(stream + first_part, audio_buf, to_copy - first_part);
+        }
+        sys->audio_read_ptr = (r + to_copy) % size;
+    }
+}
+
 m3ApiRawFunction(host_init) {
+    m3ApiGetArg(uint32_t, title_ptr);
     m3ApiGetArg(uint32_t, w);
     m3ApiGetArg(uint32_t, h);
-    m3ApiGetArg(uint32_t, vram);
-    m3ApiGetArg(uint32_t, ram);
+    m3ApiGetArg(uint32_t, bpp);
+    m3ApiGetArg(uint32_t, scale);
+    m3ApiGetArg(uint32_t, audio_size);
+    m3ApiGetArg(uint32_t, audio_rate);
+    m3ApiGetArg(uint32_t, audio_bpp);
 
-    printf(">>> Host Init Called: %ux%u (VRAM: %u, RAM: %u)\n", w, h, vram, ram);
+    if (bpp != 8 && bpp != 16 && bpp != 32) {
+        fprintf(stderr, "FATAL ERROR: Invalid BPP value (%u). Wagnostic supports only 8, 16, or 32 bpp.\n", bpp);
+        exit(1);
+    }
+
     W = w; H = h;
 
     uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
     SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
+    
+    // Copy title from WASM memory
+    if (title_ptr != 0) {
+        strncpy(sys->title, (char*)(mem + title_ptr), 127);
+        sys->title[127] = '\0';
+    }
+
     sys->width = w;
     sys->height = h;
-    sys->vram = vram;
-    sys->ram = ram;
+    sys->bpp = bpp;
+    sys->scale = scale;
+    sys->audio_size = audio_size;
+    sys->audio_sample_rate = audio_rate;
+    sys->audio_bpp = audio_bpp;
+    sys->audio_read_ptr = 0;
+    sys->audio_write_ptr = 0;
+
+    printf(">>> Wagnostic Init: '%s' %ux%u@%ubpp (Scale: %u, Audio: %u bytes @ %uHz, %ubpp)\n", 
+           sys->title, w, h, bpp, scale, audio_size, audio_rate, audio_bpp);
 
     if (window) {
+        SDL_SetWindowTitle(window, sys->title);
         SDL_SetWindowSize(window, W * scale, H * scale);
         glViewport(0, 0, W * scale, H * scale);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, fb_tex);
-        // Use RGBA8 as internal format for maximum flexibility
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    }
+
+    if (audio_size > 0) {
+        if (audio_dev) SDL_CloseAudioDevice(audio_dev);
+
+        SDL_AudioSpec wanted, have;
+        SDL_zero(wanted);
+        wanted.freq = audio_rate;
+        
+        if (audio_bpp == 1) wanted.format = AUDIO_U8;
+        else if (audio_bpp == 4) wanted.format = AUDIO_F32SYS;
+        else wanted.format = AUDIO_S16SYS; // Default
+
+        wanted.channels = 2; // Stereo for now
+        wanted.samples = 1024;
+        wanted.callback = audio_callback;
+
+        audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted, &have, 0);
+        if (audio_dev) {
+            SDL_PauseAudioDevice(audio_dev, 0);
+        } else {
+            fprintf(stderr, "SDL_OpenAudioDevice error: %s\n", SDL_GetError());
+        }
     }
 
     m3ApiSuccess();
@@ -172,9 +258,7 @@ m3ApiRawFunction(host_get_ticks) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { printf("usage: %s game.wasm [scale]\n", argv[0]); return 1; }
-    scale = (argc >= 3) ? atoi(argv[2]) : 4;
-    if (scale < 1) scale = 1;
+    if (argc < 2) { printf("usage: %s game.wasm\n", argv[0]); return 1; }
 
     IM3Environment env     = m3_NewEnvironment();
     runtime = m3_NewRuntime(env, 8 * 1024 * 1024, NULL); 
@@ -200,7 +284,7 @@ int main(int argc, char** argv) {
     }
 
     m3_LinkRawFunction(module, "env", "get_ticks", "i()", host_get_ticks);
-    m3_LinkRawFunction(module, "env", "init", "v(iiii)", host_init);
+    m3_LinkRawFunction(module, "env", "init", "v(iiiiiiii)", host_init);
 
     IM3Function fn_frame;
     result = m3_FindFunction(&fn_frame, runtime, "game_frame");
@@ -210,7 +294,7 @@ int main(int argc, char** argv) {
     if (result) { fprintf(stderr, "m3_FindFunction (game_frame/main) error: %s\n", result); return 1; }
 
     printf("Initializing SDL and Window...\n");
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
         fprintf(stderr, "SDL_Init error: %s\n", SDL_GetError());
         return 1;
     }
@@ -321,10 +405,10 @@ int main(int argc, char** argv) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, fb_tex);
 
-                if (sys->bpp == 4) {
+                if (sys->bpp == 32) {
                     // 32bpp: Direct upload
                     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, fb);
-                } else if (sys->bpp == 1) {
+                } else if (sys->bpp == 8) {
                     // 8bpp (RGB332): Convert to 32bpp
                     static uint32_t* temp_fb32 = NULL;
                     temp_fb32 = realloc(temp_fb32, W * H * 4);
@@ -336,8 +420,8 @@ int main(int argc, char** argv) {
                         temp_fb32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
                     }
                     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, W, H, GL_RGBA, GL_UNSIGNED_BYTE, temp_fb32);
-                } else {
-                    // Default 16bpp (RGB565): Convert to 32bpp
+                } else if (sys->bpp == 16) {
+                    // 16bpp (RGB565): Convert to 32bpp
                     static uint32_t* temp_fb32 = NULL;
                     temp_fb32 = realloc(temp_fb32, W * H * 4);
                     uint16_t* fb16 = (uint16_t*)fb;

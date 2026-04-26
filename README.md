@@ -1,106 +1,159 @@
 # Wagnostic
 
-**Wagnostic** is a minimalist real-time framebuffer and input communication protocol based on shared memory. It defines a standard interface between a **Host** (executor) and a **Cartridge** (WebAssembly) for 16-bit graphical rendering and peripheral handling.
+**Wagnostic** is a protocol. A tiny, fixed contract between a **Host** (the program that opens a window) and a **ROM** (a `.wasm` file that draws to it).
 
-## Characteristics
-- **Agnostic**: The protocol does not dictate how the application should be written, only how it communicates.
-- **Efficient**: Uses a Shared Memory Model for zero-copy inputs and direct access to the video buffer.
-- **Portable**: Host implementations available for Desktop (C/SDL2), Handhelds (PortMaster), and Web (JavaScript).
+The ROM writes pixels to memory. The Host displays them. The Host writes button states to memory. The ROM reads them. That's it.
 
----
-
-## Architecture
-
-The protocol is based on two primary components:
-1. **The Host:** Responsible for window management, capturing hardware inputs, and instantiating the WebAssembly VM.
-2. **The Cartridge:** A `.wasm` module that implements the logic and writes directly to the framebuffer memory.
-
-### Memory Map
-The cartridge access hardware state through a shared memory structure located at the beginning of the WASM memory (offset `0`):
-
-| Offset | Size | Field | Description |
-|--------|------|-------|-------------|
-| 0      | 128  | `title` | Window Title (UTF-8 Null-terminated) |
-| 128    | 4    | `width` | Screen width in pixels |
-| 132    | 4    | `height`| Screen height in pixels |
-| 136    | 4    | `bpp`   | Bits Per Pixel: 1 (8bpp), 2 (16bpp), 4 (32bpp) |
-| 140    | 4    | `scale` | Rendering scale (for host window size) |
-| 144    | 4    | `audio_size` | Audio Ring Buffer size in bytes |
-| 148    | 4    | `audio_write`| Cartridge write pointer (byte offset) |
-| 152    | 4    | `audio_read` | Host read pointer (byte offset) |
-| 156    | 4    | `audio_rate` | Sample rate (e.g. 44100) |
-| 160    | 4    | `audio_bpp`  | Bits per sample: 1 (8-bit), 2 (16-bit), 4 (32-bit float) |
-| 164    | 4    | `redraw`| Set to 1 by cartridge to request a frame redraw |
-| 168    | 4    | `gamepad_buttons` | Bitmask of active buttons |
-| 172    | 16   | `joysticks` | 4x int32 for L/R sticks axes |
-| 188    | 256  | `keys` | Array of 256 bytes for keyboard scancodes (1=down) |
-| 444    | 4    | `mouse_x` | Mouse X coordinate |
-| 448    | 4    | `mouse_y` | Mouse Y coordinate |
-| 452    | 4    | `mouse_buttons` | Bitmask for mouse buttons (L, R, M...) |
-| 456    | 4    | `mouse_wheel` | Mouse wheel vertical scroll |
-| 460    | 52   | `reserved` | Reserved for future protocol expansion |
-| **512**| -    | **VRAM** | **Framebuffer (Size: `width * height * bpp`)** |
-| `512 + vram_size` | - | **Audio** | **Audio Ring Buffer (Size: `audio_size`)** |
-| `512 + vram_size + audio_size` | - | **RAM** | **General purpose cartridge RAM (Heap)** |
-
-### Supported Pixel Formats
-- **8**: RGB332 (3 bits Red, 3 bits Green, 2 bits Blue).
-- **16**: RGB565 (5 bits Red, 6 bits Green, 5 bits Blue). **[Default]**
-- **32**: RGBA8888 (8 bits per channel, Alpha is ignored by host).
-
-### Supported Audio Formats
-- **1 (8-bit)**: Unsigned 8-bit PCM.
-- **2 (16-bit)**: Signed 16-bit PCM (Little-endian). **[Default]**
-- **4 (32-bit)**: 32-bit Float PCM (Little-endian).
+No APIs to learn. No SDKs to install. No engine. Just memory.
 
 ---
 
-## Cartridge Development
+## The Core Idea
 
-Cartridges must be compiled to WebAssembly (target `wasm32-unknown-unknown`) and export at least one of these functions:
+Every Wagnostic session shares a single block of memory between the Host and the ROM. The layout is always the same:
+
+```
+┌─────────────────────────────────────┐  ← offset 0
+│         System Header               │  512 bytes (title, width, height,
+│  (config, inputs, audio pointers)   │   bpp, audio config, buttons, mouse...)
+├─────────────────────────────────────┤  ← offset 512
+│              VRAM                   │  width × height × (bpp/8) bytes
+│         (raw pixel data)            │
+├─────────────────────────────────────┤  ← offset 512 + vram_size
+│          Audio Ring Buffer          │  audio_size bytes
+├─────────────────────────────────────┤
+│          ROM Heap / RAM             │  everything else
+└─────────────────────────────────────┘
+```
+
+The ROM draws by writing pixel values directly to offset `512`. The Host reads from there and blits to the screen. No draw calls. No render passes. Just a write.
+
+---
+
+## Writing a ROM
+
+A minimal Wagnostic ROM in C looks like this:
 
 ```c
-// Called every frame (60Hz)
-void game_frame(void);
+// The shared memory header lives at address 0
+#define sys    ((volatile SystemConfig*)0)
+// VRAM starts at byte 512
+#define vram   ((volatile uint16_t*)512)
 
-// OR
-int main(void);
+int main() {
+    if (sys->width == 0)
+        init("My Game", 320, 240, 16, 2, 0, 0, 0, 0);
+
+    // Clear screen to dark blue
+    for (int i = 0; i < 320 * 240; i++)
+        vram[i] = RGB565(0, 0, 64);
+
+    // Signal the host to redraw
+    sys->redraw = 1;
+    return 0;
+}
 ```
 
-### Host Imports (env)
-The host provides these functions to the cartridge:
-- `void init(const char* title, int w, int h, int bpp, int scale, int audio_size, int audio_rate, int audio_bpp)`: Sets the window title, resolution, bpp, scale and audio allocation.
-- `uint32_t get_ticks()`: Returns the number of milliseconds since the engine started.
-
-### Input Constants
-```c
-#define BTN_UP     (1 << 0)
-#define BTN_DOWN   (1 << 1)
-#define BTN_LEFT   (1 << 2)
-#define BTN_RIGHT  (1 << 3)
-#define BTN_A      (1 << 4)
-#define BTN_B      (1 << 5)
-#define BTN_START  (1 << 10)
-#define BTN_SELECT (1 << 11)
+Compile it:
+```bash
+clang --target=wasm32 -nostdlib \
+      -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined \
+      -Wl,--global-base=1048576 \
+      rom.c -o rom.wasm
 ```
+
+Run it on any Wagnostic host.
 
 ---
 
-## Build and Execution
+## Writing a Host
 
-### Desktop Build
-```bash
-make
+A host needs to do four things:
+
+1. **Instantiate** the `.wasm` with two imported functions: `init` and `get_ticks`.
+2. **Write** keyboard, gamepad, and mouse state into the header every frame.
+3. **Call** the ROM's `game_frame` (or `main`) function once per frame.
+4. **Blit** VRAM to the screen when `redraw == 1`, then reset it to 0.
+
+In pseudocode:
+
+```
+while running:
+    mem[192 + scancode] = key_pressed ? 1 : 0
+    mem[172]            = gamepad_bitmask
+    mem[448], mem[452]  = mouse_x, mouse_y
+
+    call rom.game_frame()
+
+    if mem[168] == 1:       // redraw flag
+        display(mem[512 : 512 + vram_size])
+        mem[168] = 0
 ```
 
-### Execution
-```bash
-# Usage: ./wagnostic <cartridge.wasm> [render_scale]
-./wagnostic game.wasm 4
-```
+That's a fully conformant Wagnostic host. The language doesn't matter. The platform doesn't matter. If you can read and write bytes and call a WASM function, you can run any Wagnostic ROM ever made.
 
-### PortMaster Export (ARM64)
-```bash
-make portmaster
-```
-This generates the `wagnostic/` directory and `wagnostic.sh` for deployment on handheld devices like the R36S.
+The reference native runner (C + SDL2 + wasm3) is **465 lines of C** and compiles to a **~186KB binary**. The web runner is a single JavaScript file.
+
+---
+
+## What it Supports
+
+**Graphics** — choose the format that fits your ROM:
+
+| BPP | Format   | Bytes/pixel |
+|-----|----------|-------------|
+| 8   | RGB332   | 1 |
+| 16  | RGB565   | 2 |
+| 32  | RGBA8888 | 4 |
+
+**Audio** — raw PCM ring buffer. The ROM writes samples, the Host drains them:
+
+| Format | Description |
+|--------|-------------|
+| U8     | Unsigned 8-bit (silence = 128) |
+| S16LE  | Signed 16-bit Little-Endian |
+| F32LE  | IEEE Float 32-bit |
+
+Any number of channels. Any sample rate.
+
+**Input** — digital buttons, two analog sticks, full 256-key keyboard, and mouse (position, buttons, wheel).
+
+---
+
+## Why It Works Anywhere
+
+Because there's almost nothing to implement.
+
+Porting Wagnostic to a new platform means: pick a WASM runtime, open a framebuffer, copy bytes. The protocol doesn't assume a GPU, an OS, or a specific runtime. There's already a native desktop runner and a web runner — both are reference implementations, nothing more.
+
+There's no reason it couldn't run on a microcontroller with a small display, inside a terminal using sixel graphics, or embedded inside another engine as a scripting sandbox. The surface area of the protocol is small enough that none of that would be surprising.
+
+A ROM compiled today will run correctly on a host written five years from now — as long as both follow the spec. No ABI drift. No deprecation cycles. The memory map is the contract and it doesn't change.
+
+---
+
+## The WASM Advantage
+
+Because ROMs are WebAssembly, they are:
+
+- **Sandboxed** — a ROM cannot access anything outside its own memory. The Host is always in control.
+- **Universal** — the same `.wasm` file runs natively on any architecture and in any browser, unchanged.
+- **Language-agnostic** — ROMs can be written in C, Zig, Rust, AssemblyScript, or anything that targets WASM.
+
+---
+
+## Getting Started
+
+- Read [**SPECIFICATION.md**](SPECIFICATION.md) to understand the full protocol and build your own host.
+- Check `examples/c/` for reference ROMs.
+- Check `runners/` for reference host implementations.
+
+---
+
+## License
+
+This project is free to use, modify, and distribute — for any purpose, including commercial use — provided that appropriate credit is given to https://github.com/jardimdanificado.
+
+No warranties are provided. Use at your own discretion.
+
+Copyright © 2026 jardimdanificado. All Rights Reserved.

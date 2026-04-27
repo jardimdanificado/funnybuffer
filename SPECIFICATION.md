@@ -55,7 +55,7 @@ The first 512 bytes are owned by the protocol. The ROM reads inputs here and wri
 ```
 Offset  Size  Field            R/W        Description
 ------  ----  ---------------  ---------  -------------------------------------------
-0       128   title            ROM→Host   UTF-8 window title, null-terminated.
+0       128   message          ROM→Host   UTF-8 text buffer for signals (title, logs, etc).
 128     4     width            ROM→Host   Framebuffer width in pixels.
 132     4     height           ROM→Host   Framebuffer height in pixels.
 136     4     bpp              ROM→Host   Bits per pixel: 8, 16, or 32.
@@ -141,10 +141,13 @@ Starting at offset **512**, there is a buffer of `signal_count` bytes. The ROM w
 #### Signal IDs:
 - `0`: **NONE** (Noop)
 - `1`: **REDRAW**: The ROM has finished a frame. The Host should blit the VRAM to the screen.
-- `2`: **QUIT**: The ROM wants to exit. The Host should close the window.
-- `3`: **UPDATE_TITLE**: The `title` field has been changed. The Host should update the window title.
-- `4`: **UPDATE_WINDOW**: The `width`, `height`, `bpp`, or `scale` fields have been changed. The Host should resize the window and reallocate resources if necessary.
+- `2`: **QUIT**: The ROM wants to exit. If `message` is not empty, the Host may display it as an exit message.
+- `3`: **UPDATE_TITLE**: The Host should update the window title using the string in the `message` buffer.
+- `4`: **UPDATE_WINDOW**: The `width`, `height`, `bpp`, or `scale` fields have been changed. The Host should resize the window.
 - `5`: **UPDATE_AUDIO**: The `audio_rate` or `audio_channels` fields have been changed. The Host should reconfigure the audio device.
+- `6`: **LOG_INFO**: The Host should print the string in `message` to the console (stdout).
+- `7`: **LOG_WARN**: The Host should print the string in `message` to the console as a warning (stderr).
+- `8`: **LOG_ERR**: The Host should print the string in `message` to the console as an error (stderr).
 
 ```pseudocode
 call rom.wupdate()
@@ -159,7 +162,9 @@ for i in 0..signal_count:
     elif sig == 2: // QUIT
         close_window()
     elif sig == 3: // UPDATE_TITLE
-        set_window_title(read_cstring(mem, 0))
+        set_window_title(read_cstring(mem, 0)) // uses message buffer
+    elif sig == 6: // LOG_INFO
+        print("INFO: " + read_cstring(mem, 0))
     
     write_u8(mem, signal_ptr + i, 0) // Reset signal
 ```

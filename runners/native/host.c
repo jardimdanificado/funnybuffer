@@ -20,7 +20,7 @@
 
 #pragma pack(push, 1)
 typedef struct {
-    char     title[128];        // Offset 0
+    char     message[128];      // Offset 0
     uint32_t width;             // Offset 128
     uint32_t height;            // Offset 132
     uint32_t bpp;               // Offset 136
@@ -205,14 +205,18 @@ static void init_sdl_from_header() {
     if (scale == 0) scale = 1;
 
     printf(">>> Wagnostic ROM Metadata: '%s' %ux%u@%ubpp (Scale: %u, Audio: %u bytes @ %uHz, %ubpp, %u ch)\n", 
-           sys->title, W, H, sys->bpp, scale, sys->audio_size, sys->audio_sample_rate, sys->audio_bpp, sys->audio_channels);
+           sys->message, W, H, sys->bpp, scale, sys->audio_size, sys->audio_sample_rate, sys->audio_bpp, sys->audio_channels);
 
-    if (window) {
-        SDL_SetWindowTitle(window, sys->title[0] ? sys->title : "Wagnostic");
+    if (!window) {
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+        window = SDL_CreateWindow(sys->message[0] ? sys->message : "Wagnostic", 
+                                SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, 
+                                W * scale, H * scale, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN);
+    } else {
         SDL_SetWindowSize(window, W * scale, H * scale);
         SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
-        glViewport(0, 0, W * scale, H * scale);
     }
+    glViewport(0, 0, W * scale, H * scale);
 
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, fb_tex);
@@ -361,32 +365,21 @@ int main(int argc, char** argv) {
             if (sig == 1) { // REDRAW
                 should_redraw = 1;
             } else if (sig == 2) { // QUIT
+                if (sys->message[0] != '\0') printf("ROM EXIT: %s\n", sys->message);
                 running = 0;
             } else if (sig == 3) { // UPDATE_TITLE
-                if (sys->title[0] != '\0') {
-                    strncpy(last_title, sys->title, 127);
+                if (sys->message[0] != '\0') {
+                    strncpy(last_title, sys->message, 127);
                     SDL_SetWindowTitle(window, last_title);
                 }
-            } else if (sig == 4) { // UPDATE_WINDOW
-                W = sys->width;
-                H = sys->height;
-                int S = sys->scale > 0 ? sys->scale : 1;
-                SDL_SetWindowSize(window, W * S, H * S);
-                glActiveTexture(GL_TEXTURE0);
-                glBindTexture(GL_TEXTURE_2D, fb_tex);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            } else if (sig == 5) { // UPDATE_AUDIO
-                // Simple re-init of SDL audio
-                SDL_CloseAudio();
-                SDL_AudioSpec want, have;
-                SDL_zero(want);
-                want.freq = sys->audio_sample_rate;
-                want.format = AUDIO_S16LE; // Simplified
-                want.channels = sys->audio_channels;
-                want.samples = 1024;
-                want.callback = NULL;
-                SDL_OpenAudio(&want, &have);
-                SDL_PauseAudio(0);
+            } else if (sig == 4 || sig == 5) { // UPDATE_WINDOW / UPDATE_AUDIO
+                init_sdl_from_header();
+            } else if (sig == 6) { // LOG_INFO
+                printf("INFO: %s\n", sys->message);
+            } else if (sig == 7) { // LOG_WARN
+                printf("WARN: %s\n", sys->message);
+            } else if (sig == 8) { // LOG_ERR
+                fprintf(stderr, "ERROR: %s\n", sys->message);
             }
             signals[i] = 0; // Clear signal
         }

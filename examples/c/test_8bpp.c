@@ -4,11 +4,9 @@ typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 typedef          int   int32_t;
 
-
-
 #pragma pack(push, 1)
 typedef struct {
-    char     title[128];
+    char     message[128];
     uint32_t width;
     uint32_t height;
     uint32_t bpp;
@@ -29,8 +27,8 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
-#define _fb  ((volatile uint8_t*)(512 + 1))
 #define _sig ((volatile uint8_t*)512)
+static uint8_t* _fb;
 
 #define RGB332(r, g, b) (uint8_t)((((r) & 0xE0)) | (((g) & 0xE0) >> 3) | (((b) & 0xC0) >> 6))
 
@@ -39,27 +37,21 @@ void winit() {
     _sys->height = 240;
     _sys->bpp = 8;
     _sys->scale = 4;
-    _sys->signal_count = 1;
+    _sys->signal_count = 4;
+    _fb = (uint8_t*)(512 + _sys->signal_count);
+
     const char* t = "Wagnostic - 8bpp Test (RGB332)";
-    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->message)[i] = t[i];
+    _sig[1] = 3; // UPDATE_TITLE
 }
 
 void wupdate() {
-
-    // Fill background
-    for (int i = 0; i < 320 * 240; i++) _fb[i] = RGB332(40, 40, 40);
-
-    // Draw a square at mouse position
-    int x = _sys->mouse_x, y = _sys->mouse_y;
-    uint8_t color = RGB332(255, 255, 255);
-    if (_sys->mouse_buttons) color = RGB332(255, 0, 0);
-
-    for(int iy = -10; iy < 10; iy++) {
-        for(int ix = -10; ix < 10; ix++) {
-            int px = x + ix, py = y + iy;
-            if(px >= 0 && px < 320 && py >= 0 && py < 240) {
-                _fb[py * 320 + px] = color;
-            }
+    for (int y = 0; y < 240; y++) {
+        for (int x = 0; x < 320; x++) {
+            uint8_t r = (x * 255) / 320;
+            uint8_t g = (y * 255) / 240;
+            uint8_t b = 128;
+            _fb[y * 320 + x] = RGB332(r, g, b);
         }
     }
 

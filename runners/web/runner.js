@@ -229,12 +229,16 @@ function gameLoop(now) {
             if (sig === 1) { // REDRAW
                 shouldRedraw = true;
             } else if (sig === 2) { // QUIT
+                const msgBytes = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
+                const firstZero = msgBytes.indexOf(0);
+                const msg = new TextDecoder().decode(msgBytes.subarray(0, firstZero > -1 ? firstZero : 128)).trim();
+                if (msg) console.log("ROM EXIT:", msg);
                 if (animationFrameId) cancelAnimationFrame(animationFrameId);
                 return;
             } else if (sig === 3) { // UPDATE_TITLE
-                const titleBytes = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
-                const firstZero = titleBytes.indexOf(0);
-                const titleStr = new TextDecoder().decode(titleBytes.subarray(0, firstZero > -1 ? firstZero : 128)).trim();
+                const msgBytes = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
+                const firstZero = msgBytes.indexOf(0);
+                const titleStr = new TextDecoder().decode(msgBytes.subarray(0, firstZero > -1 ? firstZero : 128)).trim();
                 if (titleStr) document.title = titleStr;
             } else if (sig === 4) { // UPDATE_WINDOW
                 const w = dv.getUint32(sysOffset + 128, true);
@@ -253,6 +257,13 @@ function gameLoop(now) {
                 if (audioCtx) audioCtx.close();
                 audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioRate });
                 setupWebAudio(audioSize, audioRate, audioBpp, audioChannels || 2);
+            } else if (sig >= 6 && sig <= 8) { // LOG SIGNALS
+                const msgBytes = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
+                const firstZero = msgBytes.indexOf(0);
+                const msg = new TextDecoder().decode(msgBytes.subarray(0, firstZero > -1 ? firstZero : 128)).trim();
+                if (sig === 6) console.info("INFO:", msg);
+                else if (sig === 7) console.warn("WARN:", msg);
+                else if (sig === 8) console.error("ERROR:", msg);
             }
             signals[i] = 0; // Clear signal
 

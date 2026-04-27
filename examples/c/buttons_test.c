@@ -4,11 +4,9 @@ typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 typedef          int   int32_t;
 
-
-
 #pragma pack(push, 1)
 typedef struct {
-    char     title[128];
+    char     message[128];
     uint32_t width;
     uint32_t height;
     uint32_t bpp;
@@ -29,8 +27,8 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
-#define _fb  ((volatile uint16_t*)(512 + 1))
 #define _sig ((volatile uint8_t*)512)
+static uint16_t* _fb;
 
 #define RGB565(r, g, b) (uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3))
 
@@ -39,9 +37,11 @@ void winit() {
     _sys->height = 240;
     _sys->bpp = 16;
     _sys->scale = 4;
-    _sys->signal_count = 1;
+    _sys->signal_count = 4;
+    _fb = (uint16_t*)(512 + _sys->signal_count);
     const char* t = "Wagnostic - Buttons & Mouse Test";
-    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->message)[i] = t[i];
+    _sig[1] = 3;
 }
 
 void draw_rect(int x, int y, int w, int h, uint16_t color) {
@@ -56,7 +56,6 @@ void draw_rect(int x, int y, int w, int h, uint16_t color) {
 
 __attribute__((visibility("default")))
 void wupdate() {
-
     // Fill screen with background
     for (int i = 0; i < (int)(_sys->width * _sys->height); i++) _fb[i] = RGB565(51, 51, 51);
     

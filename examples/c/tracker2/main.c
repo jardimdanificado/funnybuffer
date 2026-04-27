@@ -23,7 +23,7 @@ extern uint32_t get_ticks();
 // ---- System struct ----
 #pragma pack(push, 1)
 typedef struct {
-    char     title[128];
+    char     message[128];
     uint32_t width, height, bpp, scale;
     uint32_t audio_size, audio_write_ptr, audio_read_ptr;
     uint32_t audio_sample_rate, audio_bpp, audio_channels;
@@ -41,8 +41,8 @@ typedef struct {
 #define _sys ((volatile SystemConfig*)0)
 
 
-#define _fb  ((volatile uint16_t*)(512 + 1))
 #define _sig ((volatile uint8_t*)512)
+static uint16_t* _fb;
 
 // SDL scancodes we care about
 #define KEY_RIGHT  79
@@ -869,14 +869,11 @@ void winit() {
     _sys->width = 320;
     _sys->height = 240;
     _sys->bpp = 16;
-    _sys->scale = 3;
-    _sys->signal_count = 1;
-    _sys->audio_size = 32768; // AUDIO_SIZE
-    _sys->audio_sample_rate = 44100; // SAMPLE_RATE
-    _sys->audio_bpp = 2;
-    _sys->audio_channels = 2;
+    _sys->signal_count = 4;
+    _fb = (uint16_t*)(512 + _sys->signal_count);
     const char* t = "Chiputnik - Chiptune Tracker";
-    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->message)[i] = t[i];
+    _sig[1] = 3;
     
     init_data();
     last_ticks = get_ticks();

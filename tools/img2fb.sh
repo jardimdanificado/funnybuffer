@@ -54,10 +54,17 @@ echo "--- Generating $HEADER_OUT ---"
     echo "#define IMAGE_DATA_H"
     echo "static const int image_width = $W;"
     echo "static const int image_height = $H;"
-    echo "static const int image_bpp = $BPP / 8;"
-    echo "static const unsigned char image_raw[] = {"
     
-    xxd -i < "$RAW_OUT"
+    if [ "$BPP" -eq 16 ]; then
+        echo "static const unsigned short image_raw[] = {"
+        hexdump -v -e '1/2 "0x%04x, "' "$RAW_OUT"
+    elif [ "$BPP" -eq 32 ]; then
+        echo "static const unsigned int image_raw[] = {"
+        hexdump -v -e '1/4 "0x%08x, "' "$RAW_OUT"
+    else
+        echo "static const unsigned char image_raw[] = {"
+        xxd -i < "$RAW_OUT"
+    fi
     
     echo "};"
     echo "#endif"

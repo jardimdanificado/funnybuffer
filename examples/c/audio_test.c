@@ -1,18 +1,13 @@
 
-// extern float sinf(float x); // Usually provided by host or we can use builtin
-#define sinf __builtin_sinf
-
 typedef unsigned char  uint8_t;
 typedef unsigned short uint16_t;
+typedef          short int16_t;
 typedef unsigned int   uint32_t;
 typedef          int   int32_t;
-typedef          short int16_t;
-
-
 
 #pragma pack(push, 1)
 typedef struct {
-    char     title[128];
+    char     message[128];
     uint32_t width;
     uint32_t height;
     uint32_t bpp;
@@ -33,65 +28,52 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
-#define _fb  ((volatile uint16_t*)(512 + 1))
 #define _sig ((volatile uint8_t*)512)
+static uint16_t* _fb;
 
 void winit() {
     _sys->width = 320;
     _sys->height = 240;
     _sys->bpp = 16;
     _sys->scale = 4;
-    _sys->signal_count = 1;
+    _sys->signal_count = 4;
+    _fb = (uint16_t*)(512 + _sys->signal_count);
     _sys->audio_size = 16384;
     _sys->audio_sample_rate = 44100;
     _sys->audio_bpp = 2;
-    _sys->audio_channels = 2;
-    const char* t = "Wagnostic - Audio Test (Sine Wave)";
-    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+    _sys->audio_channels = 1;
+    const char* t = "Wagnostic - Audio Sine Test";
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->message)[i] = t[i];
+    _sig[1] = 3;
 }
 
 #define SAMPLE_RATE 44100
-#define AUDIO_BUF_SIZE 16384
-#define PI 3.14159265359f
+#define PI 3.14159265f
+static float phase = 0;
 
-float phase = 0;
-
+__attribute__((visibility("default")))
 void wupdate() {
-
     uint8_t* mem = (uint8_t*)0;
-    uint8_t* audio_buf = mem + 512 + (_sys->width * _sys->height * (_sys->bpp / 8));
-    int16_t* samples = (int16_t*)audio_buf;
+    uint32_t audio_ptr = 512 + _sys->signal_count + (_sys->width * _sys->height * (_sys->bpp / 8));
+    int16_t* audio_buf = (int16_t*)(mem + audio_ptr);
 
-    uint32_t r = _sys->audio_read_ptr;
-    uint32_t w = _sys->audio_write_ptr;
-    uint32_t size = _sys->audio_size;
+    uint32_t free_space;
+    if (_sys->audio_write_ptr >= _sys->audio_read_ptr) {
+        free_space = _sys->audio_size - (_sys->audio_write_ptr - _sys->audio_read_ptr);
+    } else {
+        free_space = _sys->audio_read_ptr - _sys->audio_write_ptr;
+    }
 
-    // Calculate free space in ring buffer
-    int available_bytes = (r > w) ? (r - w - 1) : (size - w + r - 1);
-    int samples_to_write = available_bytes / 4; // 16-bit Stereo = 4 bytes per sample
-
-    if (samples_to_write > 512) samples_to_write = 512; // Don't write too much at once
-
-    for (int i = 0; i < samples_to_write; i++) {
-        // Simple triangle wave: phase goes from 0 to 2*PI
-        float t = phase / (2.0f * PI); // 0 to 1
-        float val = (t < 0.5f) ? (4.0f * t - 1.0f) : (3.0f - 4.0f * t);
-        val *= 0.2f; // Volume
-        int16_t sample = (int16_t)(val * 32767.0f);
-        
-        uint32_t pos = (w + i * 4) % size;
-        int16_t* out = (int16_t*)(audio_buf + pos);
-        out[0] = sample; // Left
-        out[1] = sample; // Right
-
+    uint32_t to_write = free_space > 1024 ? 1024 : free_space;
+    for (uint32_t i = 0; i < to_write / 2; i++) {
+        float sample = 0.5f * __builtin_sinf(phase);
+        audio_buf[(_sys->audio_write_ptr / 2 + i) % (_sys->audio_size / 2)] = (int16_t)(sample * 32767);
         phase += 2.0f * PI * 440.0f / SAMPLE_RATE;
         if (phase > 2.0f * PI) phase -= 2.0f * PI;
     }
-
-    _sys->audio_write_ptr = (w + samples_to_write * 4) % size;
+    _sys->audio_write_ptr = (_sys->audio_write_ptr + to_write) % _sys->audio_size;
 
     // Simple visual feedback
-    uint16_t* fb = (uint16_t*)(mem + 512);
-    for(int i=0; i<320*240; i++) fb[i] = (uint16_t)(phase * 1000);
+    for(int i=0; i<320*240; i++) _fb[i] = (uint16_t)(phase * 1000);
     _sig[0] = 1;
 }

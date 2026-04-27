@@ -4,11 +4,9 @@ typedef unsigned short uint16_t;
 typedef unsigned int   uint32_t;
 typedef          int   int32_t;
 
-
-
 #pragma pack(push, 1)
 typedef struct {
-    char     title[128];
+    char     message[128];
     uint32_t width;
     uint32_t height;
     uint32_t bpp;
@@ -29,8 +27,8 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
-#define _fb  ((volatile uint32_t*)(512 + 1))
 #define _sig ((volatile uint8_t*)512)
+static uint32_t* _fb;
 
 #define RGBA(r, g, b, a) (uint32_t)((a << 24) | (b << 16) | (g << 8) | r)
 
@@ -39,26 +37,21 @@ void winit() {
     _sys->height = 240;
     _sys->bpp = 32;
     _sys->scale = 4;
-    _sys->signal_count = 1;
+    _sys->signal_count = 4;
+    _fb = (uint32_t*)(512 + _sys->signal_count);
+
     const char* t = "Wagnostic - 32bpp Test (RGBA8888)";
-    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->message)[i] = t[i];
+    _sig[1] = 3;
 }
 
 void wupdate() {
-
-    // Fill background
-    for (int i = 0; i < 320 * 240; i++) _fb[i] = RGBA(30, 30, 30, 255);
-
-    int x = _sys->mouse_x, y = _sys->mouse_y;
-    uint32_t color = RGBA(0, 200, 255, 255);
-    if (_sys->mouse_buttons) color = RGBA(255, 255, 0, 255);
-
-    for(int iy = -10; iy < 10; iy++) {
-        for(int ix = -10; ix < 10; ix++) {
-            int px = x + ix, py = y + iy;
-            if(px >= 0 && px < 320 && py >= 0 && py < 240) {
-                _fb[py * 320 + px] = color;
-            }
+    for (int y = 0; y < 240; y++) {
+        for (int x = 0; x < 320; x++) {
+            uint8_t r = (x * 255) / 320;
+            uint8_t g = (y * 255) / 240;
+            uint8_t b = 255;
+            _fb[y * 320 + x] = RGBA(r, g, b, 255);
         }
     }
 

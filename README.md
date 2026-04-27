@@ -4,7 +4,7 @@
 
 Wagnostic is a minimalist, platform-agnostic specification and runtime for high-performance interactive applications.
 
-## 📦 Memory Layout (Protocol 2.0)
+## 📦 Memory Layout
 
 | Offset | Hex | Name | Description |
 | :--- | :--- | :--- | :--- |

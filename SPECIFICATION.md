@@ -20,27 +20,6 @@ All communication happens through this shared memory. There are no sockets, no e
 ### 2.1 Functions the ROM **imports** (Host must provide)
 The ROM will try to call these functions from the `env` module at instantiation time. You **must** provide them all.
 
-#### `env.init(title_ptr, width, height, bpp, scale, audio_size, audio_rate, audio_bpp, audio_channels)`
-Called by the ROM exactly once during its first frame to configure the system.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `title_ptr` | `i32` | Pointer (offset in WASM memory) to a UTF-8 null-terminated string for the window title. |
-| `width` | `i32` | Desired framebuffer width in pixels. |
-| `height` | `i32` | Desired framebuffer height in pixels. |
-| `bpp` | `i32` | Bits per pixel. Must be **8**, **16**, or **32**. |
-| `scale` | `i32` | Suggested window size multiplier (e.g., 2 = 640×480 for a 320×240 ROM). The Host may ignore this. |
-| `audio_size` | `i32` | Size of the audio ring buffer in bytes. 0 = no audio. |
-| `audio_rate` | `i32` | Sample rate in Hz (e.g., 44100, 48000). |
-| `audio_bpp` | `i32` | Audio sample size in **bytes**: 1 (U8), 2 (S16LE), or 4 (F32LE). |
-| `audio_channels` | `i32` | Number of audio channels (1 = Mono, 2 = Stereo, N = N channels). |
-
-When this function is called, the Host should:
-1. Read the title string from WASM memory at `title_ptr`.
-2. Resize/create the display surface to `width × height`.
-3. Initialize the audio subsystem with `audio_rate`, `audio_bpp`, and `audio_channels`.
-4. Write all configuration values into the **Header** (see Section 3).
-
 #### `env.get_ticks() -> i32`
 Returns the number of milliseconds elapsed since some arbitrary start point. Used by ROMs for timing. Return a monotonic, always-increasing value.
 
@@ -49,10 +28,11 @@ Returns the number of milliseconds elapsed since some arbitrary start point. Use
 ### 2.2 Functions the Host **calls** (ROM must export)
 The Host drives the ROM by calling these functions. The ROM must export at least one of them.
 
-#### `main()` or `game_frame()`
-Called once per frame by the Host's main loop. The ROM reads inputs from memory, updates state, renders to VRAM, and sets `redraw = 1` if a new frame is ready.
+#### `winit()`
+Called by the Host **exactly once** immediately after instantiation. The ROM must use this function to write its configuration (title, width, height, BPP, audio settings) into the **System Header** (address 0x000).
 
-The Host should prefer `game_frame` if it exists, falling back to `main`.
+#### `wupdate()`
+Called once per frame by the Host's main loop. The ROM reads inputs from memory, updates state, renders to VRAM, and sets `redraw = 1` if a new frame is ready.
 
 ---
 
@@ -62,8 +42,9 @@ The WASM instance's linear memory is the single source of truth. **All offsets a
 
 ```
 [0x000 - 0x1FF]  System Header    (512 bytes, fixed)
-[0x200 ...]      VRAM             (width × height × bpp/8 bytes)
-[0x200 + vram]   Audio Buffer     (audio_size bytes, ring buffer)
+[0x200 - 0x200 + signal_count - 1]  Signal Buffer (signal_count bytes)
+[0x200 + signal_count ...]      VRAM             (width × height × bpp/8 bytes)
+[above vram]     Audio Buffer     (audio_size bytes, ring buffer)
 [above audio]    ROM Heap / RAM   (all remaining memory)
 ```
 
@@ -85,7 +66,7 @@ Offset  Size  Field            R/W        Description
 156     4     audio_rate       ROM→Host   Sample rate (e.g. 44100).
 160     4     audio_bpp        ROM→Host   Audio bytes per sample (1, 2, or 4).
 164     4     audio_channels   ROM→Host   Number of audio channels.
-168     4     redraw           ROM→Host   Set to 1 by ROM when a frame is ready.
+168     4     signal_count     ROM→Host   Number of signal slots at offset 512.
 172     4     gamepad          Host→ROM   Button bitmask (see Section 5.1).
 176     4     joystick_lx      Host→ROM   Left stick X axis (signed int32, -32768..32767).
 180     4     joystick_ly      Host→ROM   Left stick Y axis.
@@ -153,24 +134,41 @@ Byte 2: Blue
 Byte 3: Alpha (Host should ignore or treat as fully opaque)
 ```
 
-### 4.3 Rendering
-The Host must **not** display the framebuffer until `redraw == 1`.
-After rendering, the Host must reset `redraw` to 0.
+### 4.3 Signals (The Signal Buffer)
+
+Starting at offset **512**, there is a buffer of `signal_count` bytes. The ROM writes signal IDs here to tell the Host to perform specific actions. The Host processes these signals and **must reset them to 0** afterward.
+
+#### Signal IDs:
+- `0`: **NONE** (Noop)
+- `1`: **REDRAW**: The ROM has finished a frame. The Host should blit the VRAM to the screen.
+- `2`: **QUIT**: The ROM wants to exit. The Host should close the window.
+- `3`: **UPDATE_TITLE**: The `title` field has been changed. The Host should update the window title.
+- `4`: **UPDATE_WINDOW**: The `width`, `height`, `bpp`, or `scale` fields have been changed. The Host should resize the window and reallocate resources if necessary.
+- `5`: **UPDATE_AUDIO**: The `audio_rate` or `audio_channels` fields have been changed. The Host should reconfigure the audio device.
 
 ```pseudocode
-call rom.game_frame()
+call rom.wupdate()
 
-redraw = read_u32(mem, 168)
-if redraw == 1:
-    blit_vram_to_screen(mem[512 : 512 + vram_size], width, height, bpp)
-    write_u32(mem, 168, 0)
+signal_ptr = 512
+for i in 0..signal_count:
+    sig = read_u8(mem, signal_ptr + i)
+    if sig == 0: continue
+    
+    if sig == 1: // REDRAW
+        blit_vram_to_screen(mem[512 + signal_count : ...], width, height, bpp)
+    elif sig == 2: // QUIT
+        close_window()
+    elif sig == 3: // UPDATE_TITLE
+        set_window_title(read_cstring(mem, 0))
+    
+    write_u8(mem, signal_ptr + i, 0) // Reset signal
 ```
 
 ---
 
 ## 5. Input
 
-The Host writes input state directly into memory before calling `game_frame`. The ROM reads it directly.
+The Host writes input state directly into memory before calling `wupdate`. The ROM reads it directly.
 
 ### 5.1 Gamepad (Offset 172)
 A single `uint32` bitmask. Each bit represents one button:
@@ -300,27 +298,27 @@ mem = wasm_memory_buffer()
 
 // Provide imports
 imports = {
-    env.init: function(title_ptr, w, h, bpp, scale, audio_size, audio_rate, audio_bpp, audio_ch):
-        title = read_cstring(mem, title_ptr)
-        open_window(title, w * scale, h * scale)
-        init_audio(audio_rate, audio_bpp, audio_ch)
-
-        write_u32(mem, 128, w)
-        write_u32(mem, 132, h)
-        write_u32(mem, 136, bpp)
-        write_u32(mem, 140, scale)
-        write_u32(mem, 144, audio_size)
-        write_u32(mem, 148, 0)   // audio_write
-        write_u32(mem, 152, 0)   // audio_read
-        write_u32(mem, 156, audio_rate)
-        write_u32(mem, 160, audio_bpp)
-        write_u32(mem, 164, audio_ch)
-
     env.get_ticks: function() -> milliseconds_since_start()
 }
 
 instance = wasm_instantiate(wasm_bytes, imports)
-frame_fn = instance.export["game_frame"] or instance.export["main"]
+
+// 1. Initialize ROM metadata
+instance.export["winit"]()
+
+// 2. Host reads metadata from Header to setup system
+title      = read_cstring(mem, 0)
+width      = read_u32(mem, 128)
+height     = read_u32(mem, 132)
+bpp        = read_u32(mem, 136)
+scale      = read_u32(mem, 140)
+audio_size = read_u32(mem, 144)
+
+open_window(title, width * scale, height * scale)
+if audio_size > 0:
+    init_audio(read_u32(mem, 156), read_u32(mem, 160), read_u32(mem, 164))
+
+frame_fn = instance.export["wupdate"]
 
 vram_size   = read_u32(mem, 128) * read_u32(mem, 132) * (read_u32(mem, 136) / 8)
 audio_start = 512 + vram_size
@@ -365,9 +363,9 @@ while window_open:
 ## 8. Checklist for a Conforming Host
 
 - [ ] Instantiates the WASM module with the correct `env` imports.
-- [ ] Provides `env.init` that writes all 11 configuration fields to the header.
+- [ ] Calls `winit` once and reads configuration fields from the header.
 - [ ] Provides `env.get_ticks` returning monotonic milliseconds.
-- [ ] Calls `game_frame` (or `main`) every frame.
+- [ ] Calls `wupdate` every frame.
 - [ ] Writes keyboard state at offsets 192–447 (one byte per scancode).
 - [ ] Writes gamepad bitmask at offset 172.
 - [ ] Writes joystick axes at offsets 176–191 (int32, -32767..32767).

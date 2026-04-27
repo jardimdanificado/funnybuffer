@@ -86,49 +86,6 @@ async function loadWasm(buffer) {
 
     const importObject = {
         env: {
-            init: (titlePtr, w, h, bpp, scale, audioSize, audioRate, audioBpp, audioChannels) => {
-                canvas.width = w;
-                canvas.height = h;
-                wrapper.classList.remove('empty');
-                canvas.focus();
-                
-                const dv = new DataView(wasmMemory.buffer);
-                
-                // Copy title
-                if (titlePtr) {
-                    const titleBytes = new Uint8Array(wasmMemory.buffer, titlePtr, 128);
-                    const destTitle = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
-                    destTitle.set(titleBytes);
-                }
-
-                dv.setUint32(sysOffset + 128, w, true);
-                dv.setUint32(sysOffset + 132, h, true);
-                dv.setUint32(sysOffset + 136, bpp, true);
-                dv.setUint32(sysOffset + 140, scale, true);
-                dv.setUint32(sysOffset + 144, audioSize, true);
-                dv.setUint32(sysOffset + 148, 0, true); // audio_write_ptr
-                dv.setUint32(sysOffset + 152, 0, true); // audio_read_ptr
-                dv.setUint32(sysOffset + 156, audioRate, true);
-                dv.setUint32(sysOffset + 160, audioBpp, true);
-                dv.setUint32(sysOffset + 164, audioChannels, true);
-                
-                // Initialize Web Audio if size > 0
-                if (audioSize > 0) {
-                    if (audioCtx && audioCtx.sampleRate !== audioRate) {
-                        audioCtx.close();
-                        audioCtx = null;
-                    }
-                    if (!audioCtx) {
-                        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioRate });
-                    }
-                    if (audioCtx.state === 'suspended') {
-                        audioCtx.resume();
-                    }
-                    setupWebAudio(audioSize, audioRate, audioBpp, audioChannels || 2);
-                }
-
-                console.log(`>>> Wagnostic Web Init: ${w}x${h}@${bpp}bpp (Scale: ${scale}, Audio: ${audioSize} bytes)`);
-            },
             get_ticks: () => performance.now()
         }
     };
@@ -136,6 +93,43 @@ async function loadWasm(buffer) {
     const { instance } = await WebAssembly.instantiate(buffer, importObject);
     wasmInstance = instance;
     wasmMemory = instance.exports.memory;
+
+    // Call winit once to let ROM configure itself
+    if (instance.exports.winit) {
+        instance.exports.winit();
+    }
+
+    // Read metadata from header
+    const dv = new DataView(wasmMemory.buffer);
+    const w = dv.getUint32(sysOffset + 128, true);
+    const h = dv.getUint32(sysOffset + 132, true);
+    const audioSize = dv.getUint32(sysOffset + 144, true);
+    const audioRate = dv.getUint32(sysOffset + 156, true);
+    const audioBpp = dv.getUint32(sysOffset + 160, true);
+    const audioChannels = dv.getUint32(sysOffset + 164, true);
+    const signalCount = dv.getUint32(sysOffset + 168, true);
+
+    const s = dv.getUint32(sysOffset + 140, true) || 1;
+    canvas.width = w;
+    canvas.height = h;
+    canvas.style.width = (w * s) + 'px';
+    canvas.style.height = (h * s) + 'px';
+    wrapper.classList.remove('empty');
+    canvas.focus();
+
+    if (audioSize > 0) {
+        if (audioCtx && audioCtx.sampleRate !== audioRate) {
+            audioCtx.close();
+            audioCtx = null;
+        }
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioRate });
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+        setupWebAudio(audioSize, audioRate, audioBpp, audioChannels || 2);
+    }
     
     lastFrameTime = performance.now();
     animationFrameId = requestAnimationFrame(gameLoop);
@@ -155,8 +149,9 @@ function setupWebAudio(size, rate, bpp, channels) {
         const width = dv.getUint32(sysOffset + 128, true);
         const height = dv.getUint32(sysOffset + 132, true);
         const videoBpp = dv.getUint32(sysOffset + 136, true);
+        const signalCount = dv.getUint32(sysOffset + 168, true);
         const vramSize = width * height * (videoBpp / 8);
-        const audioBufPtr = 512 + vramSize;
+        const audioBufPtr = 512 + signalCount + vramSize;
 
         let bytesAvailable = (w >= r) ? (w - r) : (s - r + w);
         const frameCount = e.outputBuffer.length;
@@ -223,19 +218,47 @@ function gameLoop(now) {
         dv.setUint32(sysOffset + 456, input.mouse.buttons, true);
         dv.setInt32(sysOffset + 460, input.mouse.wheel, true);
 
-        const frameFunc = wasmInstance.exports.game_frame || wasmInstance.exports.main;
-        if (frameFunc) frameFunc();
+        const signalCount = dv.getUint32(sysOffset + 168, true);
+        const signals = new Uint8Array(wasmMemory.buffer, sysOffset + 512, signalCount);
+        
+        let shouldRedraw = false;
+        for (let i = 0; i < signalCount; i++) {
+            const sig = signals[i];
+            if (sig === 0) continue;
 
-        const redraw = dv.getUint32(sysOffset + 168, true);
-        if (redraw) {
+            if (sig === 1) { // REDRAW
+                shouldRedraw = true;
+            } else if (sig === 2) { // QUIT
+                if (animationFrameId) cancelAnimationFrame(animationFrameId);
+                return;
+            } else if (sig === 3) { // UPDATE_TITLE
+                const titleBytes = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
+                const firstZero = titleBytes.indexOf(0);
+                const titleStr = new TextDecoder().decode(titleBytes.subarray(0, firstZero > -1 ? firstZero : 128)).trim();
+                if (titleStr) document.title = titleStr;
+            } else if (sig === 4) { // UPDATE_WINDOW
+                const w = dv.getUint32(sysOffset + 128, true);
+                const h = dv.getUint32(sysOffset + 132, true);
+                const s = dv.getUint32(sysOffset + 140, true) || 1;
+                canvas.width = w;
+                canvas.height = h;
+                canvas.style.width = (w * s) + 'px';
+                canvas.style.height = (h * s) + 'px';
+            } else if (sig === 5) { // UPDATE_AUDIO
+                const audioSize = dv.getUint32(sysOffset + 144, true);
+                const audioRate = dv.getUint32(sysOffset + 156, true);
+                const audioBpp = dv.getUint32(sysOffset + 160, true);
+                const audioChannels = dv.getUint32(sysOffset + 164, true);
+                if (audioNode) audioNode.disconnect();
+                if (audioCtx) audioCtx.close();
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: audioRate });
+                setupWebAudio(audioSize, audioRate, audioBpp, audioChannels || 2);
+            }
+            signals[i] = 0; // Clear signal
+
+        if (shouldRedraw) {
             renderFrame(dv);
-            dv.setUint32(sysOffset + 168, 0, true);
         }
-
-        const titleBytes = new Uint8Array(wasmMemory.buffer, sysOffset + 0, 128);
-        const firstZero = titleBytes.indexOf(0);
-        const titleStr = new TextDecoder().decode(titleBytes.subarray(0, firstZero > -1 ? firstZero : 128)).trim();
-        if (titleStr && document.title !== titleStr) document.title = titleStr;
     }
 
     animationFrameId = requestAnimationFrame(gameLoop);
@@ -245,6 +268,7 @@ function renderFrame(dv) {
     const w = dv.getUint32(sysOffset + 128, true);
     const h = dv.getUint32(sysOffset + 132, true);
     const bpp = dv.getUint32(sysOffset + 136, true);
+    const signalCount = dv.getUint32(sysOffset + 168, true);
     
     if (w === 0 || h === 0) return;
 
@@ -253,7 +277,7 @@ function renderFrame(dv) {
     }
     
     const data = imageDataCache.data;
-    const vramPtr = 512;
+    const vramPtr = 512 + signalCount;
     const data32 = new Uint32Array(data.buffer);
     
     if (bpp === 32) {

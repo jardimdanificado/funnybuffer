@@ -33,8 +33,7 @@ typedef struct {
     uint32_t audio_sample_rate; // Offset 156
     uint32_t audio_bpp;         // Offset 160
     uint32_t audio_channels;    // Offset 164
-
-    uint32_t redraw;            // Offset 168
+    uint32_t signal_count;      // Offset 168
     
     // ---- Inputs ----
     uint32_t gamepad_buttons;   // Offset 172
@@ -192,68 +191,45 @@ static void audio_callback(void* userdata, uint8_t* stream, int len) {
     }
 }
 
-m3ApiRawFunction(host_init) {
-    m3ApiGetArg(uint32_t, title_ptr);
-    m3ApiGetArg(uint32_t, w);
-    m3ApiGetArg(uint32_t, h);
-    m3ApiGetArg(uint32_t, bpp);
-    m3ApiGetArg(uint32_t, scale);
-    m3ApiGetArg(uint32_t, audio_size);
-    m3ApiGetArg(uint32_t, audio_rate);
-    m3ApiGetArg(uint32_t, audio_bpp);
-    m3ApiGetArg(uint32_t, audio_channels);
+static void init_sdl_from_header() {
+    uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
+    SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
 
-    if (bpp != 8 && bpp != 16 && bpp != 32) {
-        fprintf(stderr, "FATAL ERROR: Invalid BPP value (%u). Wagnostic supports only 8, 16, or 32 bpp.\n", bpp);
+    if (sys->bpp != 8 && sys->bpp != 16 && sys->bpp != 32) {
+        fprintf(stderr, "FATAL ERROR: Invalid BPP value (%u). Wagnostic supports only 8, 16, or 32 bpp.\n", sys->bpp);
         exit(1);
     }
 
-    W = w; H = h;
+    W = sys->width; H = sys->height;
+    uint32_t scale = sys->scale;
+    if (scale == 0) scale = 1;
 
-    uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
-    SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
-    
-    // Copy title from WASM memory
-    if (title_ptr != 0) {
-        strncpy(sys->title, (char*)(mem + title_ptr), 127);
-        sys->title[127] = '\0';
-    }
-
-    sys->width = w;
-    sys->height = h;
-    sys->bpp = bpp;
-    sys->scale = scale;
-    sys->audio_size = audio_size;
-    sys->audio_sample_rate = audio_rate;
-    sys->audio_bpp = audio_bpp;
-    sys->audio_channels = audio_channels;
-    sys->audio_read_ptr = 0;
-    sys->audio_write_ptr = 0;
-
-    printf(">>> Wagnostic Init: '%s' %ux%u@%ubpp (Scale: %u, Audio: %u bytes @ %uHz, %ubpp, %u ch)\n", 
-           sys->title, w, h, bpp, scale, audio_size, audio_rate, audio_bpp, audio_channels);
+    printf(">>> Wagnostic ROM Metadata: '%s' %ux%u@%ubpp (Scale: %u, Audio: %u bytes @ %uHz, %ubpp, %u ch)\n", 
+           sys->title, W, H, sys->bpp, scale, sys->audio_size, sys->audio_sample_rate, sys->audio_bpp, sys->audio_channels);
 
     if (window) {
-        SDL_SetWindowTitle(window, sys->title);
+        SDL_SetWindowTitle(window, sys->title[0] ? sys->title : "Wagnostic");
         SDL_SetWindowSize(window, W * scale, H * scale);
+        SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
         glViewport(0, 0, W * scale, H * scale);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, fb_tex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     }
 
-    if (audio_size > 0) {
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, fb_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+
+    if (sys->audio_size > 0) {
         if (audio_dev) SDL_CloseAudioDevice(audio_dev);
 
         SDL_AudioSpec wanted, have;
         SDL_zero(wanted);
-        wanted.freq = audio_rate;
+        wanted.freq = sys->audio_sample_rate;
         
-        if (audio_bpp == 1) wanted.format = AUDIO_U8;
-        else if (audio_bpp == 4) wanted.format = AUDIO_F32SYS;
+        if (sys->audio_bpp == 1) wanted.format = AUDIO_U8;
+        else if (sys->audio_bpp == 4) wanted.format = AUDIO_F32SYS;
         else wanted.format = AUDIO_S16SYS; // Default
 
-        wanted.channels = audio_channels;
+        wanted.channels = sys->audio_channels;
         wanted.samples = 1024;
         wanted.callback = audio_callback;
 
@@ -264,8 +240,6 @@ m3ApiRawFunction(host_init) {
             fprintf(stderr, "SDL_OpenAudioDevice error: %s\n", SDL_GetError());
         }
     }
-
-    m3ApiSuccess();
 }
 
 m3ApiRawFunction(host_get_ticks) {
@@ -300,14 +274,17 @@ int main(int argc, char** argv) {
     }
 
     m3_LinkRawFunction(module, "env", "get_ticks", "i()", host_get_ticks);
-    m3_LinkRawFunction(module, "env", "init", "v(iiiiiiiii)", host_init);
+
+    IM3Function fn_init;
+    result = m3_FindFunction(&fn_init, runtime, "winit");
+    if (result) { fprintf(stderr, "m3_FindFunction (winit) error: %s\n", result); return 1; }
+
+    result = m3_CallV(fn_init);
+    if (result) { fprintf(stderr, "m3_CallV (winit) error: %s\n", result); return 1; }
 
     IM3Function fn_frame;
-    result = m3_FindFunction(&fn_frame, runtime, "game_frame");
-    if (result) {
-        result = m3_FindFunction(&fn_frame, runtime, "main");
-    }
-    if (result) { fprintf(stderr, "m3_FindFunction (game_frame/main) error: %s\n", result); return 1; }
+    result = m3_FindFunction(&fn_frame, runtime, "wupdate");
+    if (result) { fprintf(stderr, "m3_FindFunction (wupdate) error: %s\n", result); return 1; }
 
     printf("Initializing SDL and Window...\n");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) < 0) {
@@ -351,11 +328,18 @@ int main(int argc, char** argv) {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 16, (void*)8);
 
+    init_sdl_from_header();
+
     glGenTextures(1, &fb_tex);
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, fb_tex);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    
+    // Re-initialize texture with correct size from header
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, fb_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
 
     int running = 1;
     SDL_Event event;
@@ -366,11 +350,45 @@ int main(int argc, char** argv) {
         uint8_t* mem = m3_GetMemory(runtime, NULL, 0);
         if (!mem) { SDL_Delay(10); continue; }
         SystemConfig* sys = (SystemConfig*)(mem + sys_wasm_offset);
+        uint8_t* signals = mem + 512;
 
-        // Update window title if changed in WASM memory (offset 312)
-        if (sys->title[0] != '\0' && strcmp(sys->title, last_title) != 0) {
-            strncpy(last_title, sys->title, 127);
-            SDL_SetWindowTitle(window, last_title);
+        // Process Signals
+        int should_redraw = 0;
+        for (uint32_t i = 0; i < sys->signal_count; i++) {
+            uint8_t sig = signals[i];
+            if (sig == 0) continue;
+
+            if (sig == 1) { // REDRAW
+                should_redraw = 1;
+            } else if (sig == 2) { // QUIT
+                running = 0;
+            } else if (sig == 3) { // UPDATE_TITLE
+                if (sys->title[0] != '\0') {
+                    strncpy(last_title, sys->title, 127);
+                    SDL_SetWindowTitle(window, last_title);
+                }
+            } else if (sig == 4) { // UPDATE_WINDOW
+                W = sys->width;
+                H = sys->height;
+                int S = sys->scale > 0 ? sys->scale : 1;
+                SDL_SetWindowSize(window, W * S, H * S);
+                glActiveTexture(GL_TEXTURE0);
+                glBindTexture(GL_TEXTURE_2D, fb_tex);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            } else if (sig == 5) { // UPDATE_AUDIO
+                // Simple re-init of SDL audio
+                SDL_CloseAudio();
+                SDL_AudioSpec want, have;
+                SDL_zero(want);
+                want.freq = sys->audio_sample_rate;
+                want.format = AUDIO_S16LE; // Simplified
+                want.channels = sys->audio_channels;
+                want.samples = 1024;
+                want.callback = NULL;
+                SDL_OpenAudio(&want, &have);
+                SDL_PauseAudio(0);
+            }
+            signals[i] = 0; // Clear signal
         }
 
         while (SDL_PollEvent(&event)) {
@@ -423,9 +441,9 @@ int main(int argc, char** argv) {
         mem = m3_GetMemory(runtime, NULL, 0);
         if (mem) {
             sys = (SystemConfig*)(mem + sys_wasm_offset);
-            uint8_t* fb = mem + 512;
+            uint8_t* fb = mem + 512 + sys->signal_count;
 
-            if (fb_tex && W > 0 && H > 0) {
+            if (fb_tex && W > 0 && H > 0 && should_redraw) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, fb_tex);
 
@@ -460,10 +478,11 @@ int main(int argc, char** argv) {
                 }
             }
             
-            glClear(GL_COLOR_BUFFER_BIT);
-            if (W > 0) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            SDL_GL_SwapWindow(window);
-            sys->redraw = 0;
+            if (should_redraw) {
+                glClear(GL_COLOR_BUFFER_BIT);
+                if (W > 0) glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                SDL_GL_SwapWindow(window);
+            }
         }
 
         uint32_t now = SDL_GetTicks();

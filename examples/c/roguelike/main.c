@@ -9,7 +9,7 @@ typedef int            bool;
 
 #include "data/sprites.h"
 
-extern void init(const char* title, int w, int h, int bpp, int scale, int audio_size, int audio_rate, int audio_bpp, int audio_channels);
+
 extern uint32_t get_ticks();
 
 #pragma pack(push, 1)
@@ -22,10 +22,8 @@ typedef struct {
     uint32_t audio_size;
     uint32_t audio_write_ptr;
     uint32_t audio_read_ptr;
-        uint32_t audio_sample_rate;
-    uint32_t audio_bpp;
-    uint32_t audio_channels;
-    uint32_t redraw;
+    uint32_t audio_sample_rate, audio_bpp, audio_channels;
+    uint32_t signal_count;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
     uint8_t  keys[256];
@@ -37,7 +35,10 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
-#define _fb ((volatile uint16_t*)512)
+
+
+#define _fb ((volatile uint16_t*)(512 + 1))
+#define _sig ((volatile uint8_t*)512)
 
 #define BTN_UP     (1 << 0)
 #define BTN_DOWN   (1 << 1)
@@ -178,19 +179,15 @@ static void reset_game() {
 }
 
 __attribute__((visibility("default")))
-int main() {
-    if (_sys->width == 0) {
-        init("Wagnostic - Roguelike Example", 320, 240, 16, 2, 0, 0, 0, 2);
-        generate_map();
-    }
+void wupdate() {
 
     if (game_state == STATE_GAMEOVER) {
         for (int i=0; i<(int)(_sys->width*_sys->height); i++) _fb[i] = RGB565(255, 0, 0);
         uint32_t pressed = _sys->gamepad_buttons & ~prev_buttons;
         prev_buttons = _sys->gamepad_buttons;
         if (pressed & BTN_START) reset_game(); 
-        _sys->redraw = 1;
-        return 0;
+        _sig[0] = 1;
+        return;
     }
 
     uint32_t pressed = _sys->gamepad_buttons & ~prev_buttons;
@@ -299,6 +296,16 @@ int main() {
         }
     }
 
-    _sys->redraw = 1;
-    return 0;
+    _sig[0] = 1;
+}
+
+void winit() {
+    _sys->width = 320;
+    _sys->height = 240;
+    _sys->bpp = 16;
+    _sys->scale = 4;
+    _sys->signal_count = 1;
+    const char* t = "Wagnostic - Roguelike";
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+    generate_map();
 }

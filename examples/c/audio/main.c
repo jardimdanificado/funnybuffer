@@ -6,7 +6,7 @@ typedef          int   int32_t;
 
 #include "audio_data.h"
 
-extern void init(const char* title, int w, int h, int bpp, int scale, int audio_size, int audio_rate, int audio_bpp, int audio_channels);
+
 
 #pragma pack(push, 1)
 typedef struct {
@@ -18,10 +18,8 @@ typedef struct {
     uint32_t audio_size;
     uint32_t audio_write_ptr;
     uint32_t audio_read_ptr;
-    uint32_t audio_sample_rate;
-    uint32_t audio_bpp;
-    uint32_t audio_channels;
-    uint32_t redraw;
+    uint32_t audio_sample_rate, audio_bpp, audio_channels;
+    uint32_t signal_count;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
     uint8_t  keys[256];
@@ -33,15 +31,28 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
+#define _fb ((volatile uint16_t*)(512 + 1))
+#define _sig ((volatile uint8_t*)512)
+
+void winit() {
+    _sys->width = 320;
+    _sys->height = 240;
+    _sys->bpp = 16;
+    _sys->scale = 4;
+    _sys->signal_count = 1;
+    _sys->audio_size = 64 * 1024 * 1024; // HUGE
+    _sys->audio_sample_rate = 44100; // music_rate
+    _sys->audio_bpp = 2; // music_bpp
+    _sys->audio_channels = 2; // music_channels
+    const char* t = "Wagnostic - Audio Player";
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+}
 
 #define AUDIO_RING_SIZE 32768
 static uint32_t music_pos = 0;
 
 __attribute__((visibility("default")))
-int main() {
-    if (_sys->width == 0) {
-        init("Wagnostic - Audio Player", 320, 240, 16, 4, AUDIO_RING_SIZE, music_rate, music_bpp, music_channels);
-    }
+void wupdate() {
 
     // Fill ring buffer with music data
     uint8_t* mem = (uint8_t*)0;
@@ -78,6 +89,5 @@ int main() {
         }
     }
 
-    _sys->redraw = 1;
-    return 0;
+    _sig[0] = 1;
 }

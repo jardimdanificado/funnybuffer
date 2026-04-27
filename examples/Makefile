@@ -12,7 +12,7 @@ AUDIO2PCM = ../tools/audio2pcm.py
 
 # Default target: only light examples
 all: buttons_test.wasm test_8bpp.wasm test_16bpp.wasm test_32bpp.wasm \
-	draw_example.wasm images_example.wasm roguelike_example.wasm
+	draw_example.wasm images_example.wasm roguelike_example.wasm tracker_example.wasm
 
 # Heavy examples target
 audio: audio_test.wasm audio_example.wasm
@@ -54,6 +54,9 @@ images_example.wasm: c/images/main.c c/images/image_data.h
 
 roguelike_example.wasm: c/roguelike/main.c c/roguelike/data/sprites.h
 	$(CLANG) $(CFLAGS) -Ic/roguelike $(MEM_FLAGS) $(LDFLAGS) c/roguelike/main.c -o roguelike_example.wasm
+
+tracker_example.wasm: c/tracker/main.c
+	$(CLANG) $(CFLAGS) $(MEM_FLAGS) $(LDFLAGS) c/tracker/main.c -o tracker_example.wasm
 
 clean:
 	rm -f *.wasm

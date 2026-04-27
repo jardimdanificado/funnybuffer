@@ -8,7 +8,7 @@ typedef unsigned int   uint32_t;
 typedef          int   int32_t;
 typedef          short int16_t;
 
-extern void init(const char* title, int w, int h, int bpp, int scale, int audio_size, int audio_rate, int audio_bpp, int audio_channels);
+
 
 #pragma pack(push, 1)
 typedef struct {
@@ -20,10 +20,8 @@ typedef struct {
     uint32_t audio_size;
     uint32_t audio_write_ptr;
     uint32_t audio_read_ptr;
-        uint32_t audio_sample_rate;
-    uint32_t audio_bpp;
-    uint32_t audio_channels;
-    uint32_t redraw;
+    uint32_t audio_sample_rate, audio_bpp, audio_channels;
+    uint32_t signal_count;
     uint32_t gamepad_buttons;
     int32_t  joystick_lx, joystick_ly, joystick_rx, joystick_ry;
     uint8_t  keys[256];
@@ -35,6 +33,22 @@ typedef struct {
 #pragma pack(pop)
 
 #define _sys ((volatile SystemConfig*)0)
+#define _fb  ((volatile uint16_t*)(512 + 1))
+#define _sig ((volatile uint8_t*)512)
+
+void winit() {
+    _sys->width = 320;
+    _sys->height = 240;
+    _sys->bpp = 16;
+    _sys->scale = 4;
+    _sys->signal_count = 1;
+    _sys->audio_size = 16384;
+    _sys->audio_sample_rate = 44100;
+    _sys->audio_bpp = 2;
+    _sys->audio_channels = 2;
+    const char* t = "Wagnostic - Audio Test (Sine Wave)";
+    for (int i = 0; i < 127 && t[i]; i++) ((char*)_sys->title)[i] = t[i];
+}
 
 #define SAMPLE_RATE 44100
 #define AUDIO_BUF_SIZE 16384
@@ -42,10 +56,7 @@ typedef struct {
 
 float phase = 0;
 
-void game_frame() {
-    if (_sys->width == 0) {
-        init("Wagnostic - Audio Test (Sine Wave)", 320, 240, 16, 4, AUDIO_BUF_SIZE, SAMPLE_RATE, 2, 2);
-    }
+void wupdate() {
 
     uint8_t* mem = (uint8_t*)0;
     uint8_t* audio_buf = mem + 512 + (_sys->width * _sys->height * (_sys->bpp / 8));
@@ -82,5 +93,5 @@ void game_frame() {
     // Simple visual feedback
     uint16_t* fb = (uint16_t*)(mem + 512);
     for(int i=0; i<320*240; i++) fb[i] = (uint16_t)(phase * 1000);
-    _sys->redraw = 1;
+    _sig[0] = 1;
 }

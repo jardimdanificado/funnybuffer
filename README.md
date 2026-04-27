@@ -15,8 +15,9 @@ Every Wagnostic session shares a single block of memory between the Host and the
 | Offset | Region | Size | Description |
 |--------|--------|------|-------------|
 | `0` | **System Header** | 512 bytes | Title, dimensions, BPP, audio config, input state. Fixed layout. |
-| `512` | **VRAM** | `width × height × (bpp/8)` | Raw pixel data. Written by ROM, read by Host. |
-| `512 + vram_size` | **Audio Buffer** | `audio_size` | PCM ring buffer. Written by ROM, drained by Host. |
+| `512` | **Signal Buffer** | `signal_count` bytes | Commands from ROM to Host (Redraw, Quit, etc). |
+| `512 + sig_cnt` | **VRAM** | `width × height × (bpp/8)` | Raw pixel data. Written by ROM, read by Host. |
+| above vram | **Audio Buffer** | `audio_size` | PCM ring buffer. Written by ROM, drained by Host. |
 | above audio | **ROM RAM** | remainder | General purpose heap. Managed by the ROM. |
 
 The ROM draws by writing pixel values directly to offset `512`. The Host reads from there and blits to the screen. No draw calls. No render passes. Just a write.
@@ -30,20 +31,30 @@ A minimal Wagnostic ROM in C looks like this:
 ```c
 // The shared memory header lives at address 0
 #define sys    ((volatile SystemConfig*)0)
-// VRAM starts at byte 512
-#define vram   ((volatile uint16_t*)512)
+// Signals start at byte 512
+#define sigs   ((volatile uint8_t*)512)
+// VRAM starts after the signals
+#define vram   ((volatile uint16_t*)(512 + 1))
 
-int main() {
-    if (sys->width == 0)
-        init("My Game", 320, 240, 16, 2, 0, 0, 0, 0);
+// Required export: host calls this once at startup
+void winit() {
+    // Fill the header with our config
+    sys->width  = 320;
+    sys->height = 240;
+    sys->bpp    = 16;
+    sys->scale  = 2;
+    sys->signal_count = 1; // 1 byte for signals
+    // ... copy title, etc
+}
 
+// Required export: host calls this every frame
+void wupdate() {
     // Clear screen to dark blue
     for (int i = 0; i < 320 * 240; i++)
         vram[i] = RGB565(0, 0, 64);
 
     // Signal the host to redraw
-    sys->redraw = 1;
-    return 0;
+    sigs[0] = 1; // 1 = REDRAW
 }
 ```
 
@@ -63,24 +74,29 @@ Run it on any Wagnostic host.
 
 A host needs to do four things:
 
-1. **Instantiate** the `.wasm` with two imported functions: `init` and `get_ticks`.
+1. **Instantiate** the `.wasm` with `env.get_ticks`.
+2. **Call** `winit()` once and read the System Header to setup window/audio.
 2. **Write** keyboard, gamepad, and mouse state into the header every frame.
-3. **Call** the ROM's `game_frame` (or `main`) function once per frame.
-4. **Blit** VRAM to the screen when `redraw == 1`, then reset it to 0.
+3. **Call** the ROM's `wupdate` function once per frame.
+4. **Process** signals at offset 512 (redraw, title update, etc).
 
 In pseudocode:
 
 ```
-while running:
-    mem[192 + scancode] = key_pressed ? 1 : 0
-    mem[172]            = gamepad_bitmask
-    mem[448], mem[452]  = mouse_x, mouse_y
+    call rom.winit()
+    width, height, bpp = read_header(mem)
+    setup_window(width, height, bpp)
 
-    call rom.game_frame()
+    while running:
+        mem[192 + scancode] = key_pressed ? 1 : 0
+        mem[172]            = gamepad_bitmask
+        mem[448], mem[452]  = mouse_x, mouse_y
 
-    if mem[168] == 1:       // redraw flag
-        display(mem[512 : 512 + vram_size])
-        mem[168] = 0
+        call rom.wupdate()
+
+        if mem[512] == 1:       // REDRAW signal
+            display(mem[513 : 513 + vram_size])
+            mem[512] = 0        // reset signal
 ```
 
 That's a fully conformant Wagnostic host. The language doesn't matter. The platform doesn't matter. If you can read and write bytes and call a WASM function, you can run any Wagnostic ROM ever made.

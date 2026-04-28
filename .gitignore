@@ -8,3 +8,4 @@ wagnostic.sh
 wagnostic/
 *_data.h
 *.raw
+*.so

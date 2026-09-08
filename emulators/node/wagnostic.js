@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Wagnostic Single-File Node.js SDL2 Host (`wagnostic.js`)
+ * Wagnostic 2.0 Single-File Node.js SDL2 Host (`wagnostic.js`)
  * 
  * Standalone Host written for Node.js.
  * Requires only @kmamal/sdl for native windowing, rendering, and audio.
@@ -11,56 +11,31 @@ const fs = require('fs');
 const path = require('path');
 const sdl = require('@kmamal/sdl');
 
-// ── ABI Offsets & Constants (ABI.md) ────────────────────
-const STRUCT_SIZE = 44;
+// ── Surface Formats & Wagnostic 2.0 Constants ─────────────
+const WSURFACE_RGBA8888 = 1;
+const WSURFACE_BGRA8888 = 2;
+const WSURFACE_RGB565   = 3;
+const WSURFACE_RGB888   = 4;
 
-const OFFSETS = {
-  width: 0,                // uint32
-  height: 4,               // uint32
-  r_bits: 8, r_shift: 12,  // uint32
-  g_bits: 16, g_shift: 20, // uint32
-  b_bits: 24, b_shift: 28, // uint32
-  a_bits: 32, a_shift: 36, // uint32
-  vram_offset: 40,         // uint32
-};
+const WUPDATE_OK    =  0;
+const WUPDATE_EXIT  =  1;
+const WUPDATE_ERROR = -1;
 
 // Gamepad Bitmasks
-const GP_UP    = 1 << 0;
-const GP_DOWN  = 1 << 1;
-const GP_LEFT  = 1 << 2;
-const GP_RIGHT = 1 << 3;
-const GP_A     = 1 << 4;
-const GP_B     = 1 << 5;
-const GP_SEL   = 1 << 6;
-const GP_START = 1 << 7;
-
-// ── WagnosticState Wrapper ──────────────────────────────
-class WagnosticState {
-  constructor(buffer, statePtr) {
-    this.buffer = buffer;
-    this.statePtr = statePtr;
-    this.view = new DataView(buffer, statePtr, STRUCT_SIZE);
-  }
-
-  updateBuffer(buffer) {
-    this.buffer = buffer;
-    this.view = new DataView(buffer, this.statePtr, STRUCT_SIZE);
-  }
-
-  get width() { return this.view.getUint32(OFFSETS.width, true); }
-  get height() { return this.view.getUint32(OFFSETS.height, true); }
-
-  get vramOffset() { return this.view.getUint32(OFFSETS.vram_offset, true); }
-
-  get rBits() { return this.view.getUint32(OFFSETS.r_bits, true); }
-  get rShift() { return this.view.getUint32(OFFSETS.r_shift, true); }
-  get gBits() { return this.view.getUint32(OFFSETS.g_bits, true); }
-  get gShift() { return this.view.getUint32(OFFSETS.g_shift, true); }
-  get bBits() { return this.view.getUint32(OFFSETS.b_bits, true); }
-  get bShift() { return this.view.getUint32(OFFSETS.b_shift, true); }
-  get aBits() { return this.view.getUint32(OFFSETS.a_bits, true); }
-  get aShift() { return this.view.getUint32(OFFSETS.a_shift, true); }
-}
+const GP_A             = 1 << 0;
+const GP_B             = 1 << 1;
+const GP_X             = 1 << 2;
+const GP_Y             = 1 << 3;
+const GP_LEFTSHOULDER  = 1 << 4;
+const GP_RIGHTSHOULDER = 1 << 5;
+const GP_SEL           = 1 << 6;
+const GP_START         = 1 << 7;
+const GP_LEFTSTICK     = 1 << 8;
+const GP_RIGHTSTICK    = 1 << 9;
+const GP_UP            = 1 << 10;
+const GP_DOWN          = 1 << 11;
+const GP_LEFT          = 1 << 12;
+const GP_RIGHT         = 1 << 13;
 
 // ── Parse Arguments ──────────────────────────────────────
 function parseArgs() {
@@ -80,7 +55,7 @@ function parseArgs() {
   }
 
   if (!romPath) {
-    console.log('Wagnostic Single-File Node.js SDL2 Host');
+    console.log('Wagnostic 2.0 Single-File Node.js SDL2 Host');
     console.log('Usage: node wagnostic.js <path-to-rom.wasm> [--scale=N] [--fps=N]');
     process.exit(1);
   }
@@ -88,105 +63,54 @@ function parseArgs() {
   return { romPath, forcedScale, forcedFps };
 }
 
-// ── Helper to resolve pixel format for SDL2 ───────────────
-function getVramLength(state, width, height) {
-  let maxBit = 0;
-  function check(bits, shift) {
-    if (bits > 0 && (shift + bits) > maxBit) maxBit = shift + bits;
-  }
-  check(state.rBits, state.rShift);
-  check(state.gBits, state.gShift);
-  check(state.bBits, state.bShift);
-  check(state.aBits, state.aShift);
-  check(state.xBits, state.xShift);
-
-  if (maxBit <= 1 && maxBit > 0) return Math.ceil((width * height) / 8);
-  if (maxBit <= 2 && maxBit > 0) return Math.ceil((width * height) / 4);
-  if (maxBit <= 4 && maxBit > 0) return Math.ceil((width * height) / 2);
-  if (maxBit <= 8 && maxBit > 0) return width * height;
-  if (maxBit <= 16 && maxBit > 0) return width * height * 2;
-  return width * height * 4;
-}
-
-function convertPixelsToRgba32(state, vramRaw, width, height, outBuffer) {
-  const rBits = state.rBits, rShift = state.rShift;
-  const gBits = state.gBits, gShift = state.gShift;
-  const bBits = state.bBits, bShift = state.bShift;
-  const aBits = state.aBits, aShift = state.aShift;
-  const xBits = state.xBits, xShift = state.xShift;
-
-  let maxBit = 0;
-  function check(bits, shift) {
-    if (bits > 0 && (shift + bits) > maxBit) maxBit = shift + bits;
-  }
-  check(rBits, rShift);
-  check(gBits, gShift);
-  check(bBits, bShift);
-  check(aBits, aShift);
-  check(xBits, xShift);
-
+// ── Convert Pixels to RGBA32 ──────────────────────────────
+function convertSurfaceToRgba32(format, vramRaw, width, height, stride, outBuffer) {
   const totalPixels = width * height;
   const out32 = new Uint32Array(outBuffer.buffer, outBuffer.byteOffset, totalPixels);
 
-  if (maxBit <= 1 && maxBit > 0) {
-    for (let i = 0; i < totalPixels; i++) {
-      const bit = (vramRaw[i >> 3] >> (7 - (i & 7))) & 1;
-      const val = bit ? 255 : 0;
-      out32[i] = (255 << 24) | (val << 16) | (val << 8) | val;
-    }
-  } else if (maxBit <= 2 && maxBit > 0) {
-    for (let i = 0; i < totalPixels; i++) {
-      const bits = (vramRaw[i >> 2] >> ((3 - (i & 3)) * 2)) & 3;
-      const val = Math.round(bits * 255 / 3);
-      out32[i] = (255 << 24) | (val << 16) | (val << 8) | val;
-    }
-  } else if (maxBit <= 4 && maxBit > 0) {
-    for (let i = 0; i < totalPixels; i++) {
-      const bits = (vramRaw[i >> 1] >> ((1 - (i & 1)) * 4)) & 15;
-      const val = Math.round(bits * 255 / 15);
-      out32[i] = (255 << 24) | (val << 16) | (val << 8) | val;
-    }
-  } else if (maxBit <= 8 && maxBit > 0) {
-    const rMax = (1 << rBits) - 1 || 1;
-    const gMax = (1 << gBits) - 1 || 1;
-    const bMax = (1 << bBits) - 1 || 1;
-    const isRgb = (rBits || gBits || bBits);
-    for (let i = 0; i < totalPixels; i++) {
-      const p = vramRaw[i];
-      if (isRgb) {
-        const r = Math.round(((p >> rShift) & rMax) * 255 / rMax);
-        const g = Math.round(((p >> gShift) & gMax) * 255 / gMax);
-        const b = Math.round(((p >> bShift) & bMax) * 255 / bMax);
-        out32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
-      } else {
-        out32[i] = (255 << 24) | (p << 16) | (p << 8) | p;
+  if (format === WSURFACE_RGBA8888) {
+    const in32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        out32[y * width + x] = in32[y * stride + x];
       }
     }
-  } else if (maxBit <= 16 && maxBit > 0) {
-    const rMax = (1 << rBits) - 1 || 1;
-    const gMax = (1 << gBits) - 1 || 1;
-    const bMax = (1 << bBits) - 1 || 1;
-    const uint16 = new Uint16Array(vramRaw.buffer, vramRaw.byteOffset, totalPixels);
-    for (let i = 0; i < totalPixels; i++) {
-      const p = uint16[i];
-      const r = Math.round(((p >> rShift) & rMax) * 255 / rMax);
-      const g = Math.round(((p >> gShift) & gMax) * 255 / gMax);
-      const b = Math.round(((p >> bShift) & bMax) * 255 / bMax);
-      out32[i] = (255 << 24) | (b << 16) | (g << 8) | r;
+  } else if (format === WSURFACE_BGRA8888) {
+    const in32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const px = in32[y * stride + x];
+        out32[y * width + x] = (px & 0xFF00FF00) | ((px & 0x00FF0000) >>> 16) | ((px & 0x000000FF) << 16);
+      }
+    }
+  } else if (format === WSURFACE_RGB565) {
+    const in16 = new Uint16Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const px = in16[y * stride + x];
+        let r = (px >>> 11) & 0x1F; r = (r << 3) | (r >>> 2);
+        let g = (px >>> 5)  & 0x3F; g = (g << 2) | (g >>> 4);
+        let b = px & 0x1F;        b = (b << 3) | (b >>> 2);
+        out32[y * width + x] = (255 << 24) | (b << 16) | (g << 8) | r;
+      }
+    }
+  } else if (format === WSURFACE_RGB888) {
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const idx = (y * stride + x) * 3;
+        const r = vramRaw[idx];
+        const g = vramRaw[idx + 1];
+        const b = vramRaw[idx + 2];
+        out32[y * width + x] = (255 << 24) | (b << 16) | (g << 8) | r;
+      }
     }
   } else {
-    const rMax = (1 << rBits) - 1 || 1;
-    const gMax = (1 << gBits) - 1 || 1;
-    const bMax = (1 << bBits) - 1 || 1;
-    const aMax = aBits ? ((1 << aBits) - 1) : 255;
-    const uint32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, totalPixels);
-    for (let i = 0; i < totalPixels; i++) {
-      const p = uint32[i];
-      const r = Math.round(((p >> rShift) & rMax) * 255 / rMax);
-      const g = Math.round(((p >> gShift) & gMax) * 255 / gMax);
-      const b = Math.round(((p >> bShift) & bMax) * 255 / bMax);
-      const a = aBits ? Math.round(((p >> aShift) & aMax) * 255 / aMax) : 255;
-      out32[i] = (a << 24) | (b << 16) | (g << 8) | r;
+    // Default RGBA8888
+    const in32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        out32[y * width + x] = in32[y * stride + x];
+      }
     }
   }
 }
@@ -203,8 +127,20 @@ async function main() {
 
   const wasmBytes = fs.readFileSync(absoluteRomPath);
 
-  let currentTitle = 'Wagnostic Host (Node.js)';
-  let lastTitleWasmPtr = 0;
+  let memory = null;
+  let arenaOffset = 0;
+
+  function hostAlloc(size, align = 4) {
+    if (arenaOffset === 0) {
+      arenaOffset = (memory.buffer.byteLength > 1048576) ? 0x20000 : 0x8000;
+    }
+    if (align > 1) {
+      arenaOffset = (arenaOffset + align - 1) & ~(align - 1);
+    }
+    const ptr = arenaOffset;
+    arenaOffset += size;
+    return ptr;
+  }
 
   function readWasmString(ptr) {
     if (!ptr || !memory) return '';
@@ -214,62 +150,110 @@ async function main() {
     return new TextDecoder().decode(bytes.subarray(0, len));
   }
 
-  function writeWasmString(ptr, str) {
-    if (!ptr || !memory) return;
-    const encoder = new TextEncoder();
-    const encoded = encoder.encode(str);
-    const bytes = new Uint8Array(memory.buffer, ptr, encoded.length + 1);
-    bytes.set(encoded);
-    bytes[encoded.length] = 0;
-  }
+  let surfacePtr = 0;
+  let clockPtr = 0;
+  let keyboardPtr = 0;
+  let mousePtr = 0;
+  let gamepadPtr = 0;
+  let audioPtr = 0;
+
+  let defaultFbPtr = 0;
+  let defaultDirtyPtr = 0;
+  let defaultAudioPtr = 0;
 
   const importObject = {
     env: {
       memory: new WebAssembly.Memory({ initial: 16 }),
-      wextension: (namePtr, dataPtr) => {
+      wextension: (namePtr, version) => {
         const name = readWasmString(namePtr);
-        if (name === 'title.set') {
-          if (dataPtr) {
-            currentTitle = readWasmString(dataPtr);
-            lastTitleWasmPtr = dataPtr;
-            if (window && !window.destroyed) {
-              try { window.setTitle(currentTitle); } catch (e) {}
-            }
-            return dataPtr;
+        if (name === 'std:surface' && version === 1) {
+          if (!surfacePtr) {
+            surfacePtr = hostAlloc(36, 4);
+            defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
+            defaultDirtyPtr = hostAlloc(32 * 8, 4);
+
+            const view = new DataView(memory.buffer, surfacePtr, 36);
+            view.setUint32(0, 1, true);               // version
+            view.setUint32(4, 36, true);              // size
+            view.setUint32(8, 320, true);             // width
+            view.setUint32(12, 240, true);            // height
+            view.setUint32(16, WSURFACE_RGBA8888, true);// format
+            view.setUint32(20, 320, true);            // stride
+            view.setUint32(24, defaultFbPtr, true);   // pixels
+            view.setUint32(28, 0, true);              // dirty_count
+            view.setUint32(32, defaultDirtyPtr, true);// dirty_offset
           }
-          return 0;
+          return surfacePtr;
         }
-        if (name === 'title.get') {
-          if (dataPtr) {
-            writeWasmString(dataPtr, currentTitle);
-            return dataPtr;
+
+        if (name === 'std:clock' && version === 1) {
+          if (!clockPtr) {
+            clockPtr = hostAlloc(32, 8);
+            const view = new DataView(memory.buffer, clockPtr, 32);
+            view.setUint32(0, 1, true);
+            view.setUint32(4, 32, true);
+            view.setBigUint64(8, 0n, true);           // ticks
+            view.setBigUint64(16, 1000n, true);       // frequency
+            view.setFloat32(24, 0.0166667, true);     // delta
           }
-          return lastTitleWasmPtr;
+          return clockPtr;
         }
-        if (name === 'std:keyboard') {
-          if (dataPtr) {
-            keyboardWasmPtr = dataPtr;
-          } else if (!keyboardWasmPtr && statePtr) {
-            keyboardWasmPtr = statePtr + STRUCT_SIZE;
+
+        if (name === 'std:keyboard' && version === 1) {
+          if (!keyboardPtr) {
+            keyboardPtr = hostAlloc(264, 4);
+            const view = new DataView(memory.buffer, keyboardPtr, 264);
+            view.setUint32(0, 1, true);
+            view.setUint32(4, 264, true);
+            new Uint8Array(memory.buffer, keyboardPtr + 8, 256).fill(0);
           }
-          return keyboardWasmPtr;
+          return keyboardPtr;
         }
-        if (name === 'std:mouse') {
-          if (dataPtr) {
-            mouseWasmPtr = dataPtr;
-          } else if (!mouseWasmPtr && statePtr) {
-            mouseWasmPtr = statePtr + STRUCT_SIZE + 256;
+
+        if (name === 'std:mouse' && version === 1) {
+          if (!mousePtr) {
+            mousePtr = hostAlloc(28, 4);
+            const view = new DataView(memory.buffer, mousePtr, 28);
+            view.setUint32(0, 1, true);
+            view.setUint32(4, 28, true);
+            view.setInt32(8, 0, true);                // x
+            view.setInt32(12, 0, true);               // y
+            view.setUint32(16, 0, true);              // buttons
+            view.setInt32(20, 0, true);               // wheel_x
+            view.setInt32(24, 0, true);               // wheel_y
           }
-          return mouseWasmPtr;
+          return mousePtr;
         }
-        if (name === 'std:gamepad') {
-          if (dataPtr) {
-            gamepadWasmPtr = dataPtr;
-          } else if (!gamepadWasmPtr && statePtr) {
-            gamepadWasmPtr = statePtr + STRUCT_SIZE + 256 + 16;
+
+        if (name === 'std:gamepad' && version === 1) {
+          if (!gamepadPtr) {
+            gamepadPtr = hostAlloc(28, 4);
+            const view = new DataView(memory.buffer, gamepadPtr, 28);
+            view.setUint32(0, 1, true);
+            view.setUint32(4, 28, true);
+            view.setUint32(8, 0, true);               // buttons
           }
-          return gamepadWasmPtr;
+          return gamepadPtr;
         }
+
+        if (name === 'std:audio' && version === 1) {
+          if (!audioPtr) {
+            audioPtr = hostAlloc(36, 4);
+            defaultAudioPtr = hostAlloc(4096 * 2 * 4, 4);
+            const view = new DataView(memory.buffer, audioPtr, 36);
+            view.setUint32(0, 1, true);
+            view.setUint32(4, 36, true);
+            view.setUint32(8, 44100, true);           // sample_rate
+            view.setUint32(12, 2, true);              // channels
+            view.setUint32(16, 1, true);              // format (F32)
+            view.setUint32(20, defaultAudioPtr, true);// buffer
+            view.setUint32(24, 4096, true);           // capacity
+            view.setUint32(28, 0, true);              // write
+            view.setUint32(32, 0, true);              // read
+          }
+          return audioPtr;
+        }
+
         return 0;
       },
       abort: () => console.error('WASM Aborted'),
@@ -302,41 +286,29 @@ async function main() {
     process.exit(1);
   }
 
-  const memory = exports.memory || importObject.env.memory;
-  let state = null;
-  let window = null;
+  memory = exports.memory || importObject.env.memory;
 
+  let window = null;
   let currentWidth = 0;
   let currentHeight = 0;
   let currentScale = 1;
 
   let isRunning = true;
-  let statePtr = 0;
-  let keyboardWasmPtr = 0;
-  let mouseWasmPtr = 0;
-  let gamepadWasmPtr = 0;
   let conversionBuffer = null;
 
   const keyBuffer = new Uint8Array(256);
   let mouseX = 0, mouseY = 0;
   let mouseButtonsMask = 0;
-  let mouseWheelDelta = 0;
+  let mouseWheelX = 0, mouseWheelY = 0;
   let gamepadMask = 0;
+  const gamepadAxes = new Int16Array(8);
 
   function exitCleanly() {
     isRunning = false;
-    if (window && !windowDestroyed(window)) {
+    if (window && !window.destroyed) {
       try { window.destroy(); } catch (e) {}
     }
     process.exit(0);
-  }
-
-  function windowDestroyed(win) {
-    return !win || win.destroyed;
-  }
-
-  function getMem() {
-    return new DataView(memory.buffer);
   }
 
   function updateGamepadKey(scancode, isDown) {
@@ -359,6 +331,7 @@ async function main() {
   let lastFrameTime = process.hrtime.bigint();
   let targetFps = forcedFps || 60;
   let frameIntervalNs = BigInt(Math.floor(1e9 / targetFps));
+  let startTime = Date.now();
 
   function gameLoop() {
     if (!isRunning) return;
@@ -370,126 +343,135 @@ async function main() {
       setImmediate(gameLoop);
       return;
     }
+    const dt = Number(elapsed) / 1e9;
     lastFrameTime = now;
 
-    // Update mapped peripheral memory buffers directly
-    if (keyboardWasmPtr && keyboardWasmPtr + 256 <= memory.buffer.byteLength) {
-      new Uint8Array(memory.buffer, keyboardWasmPtr, 256).set(keyBuffer);
+    // Update Extension Buffers
+    if (clockPtr && clockPtr + 32 <= memory.buffer.byteLength) {
+      const view = new DataView(memory.buffer, clockPtr, 32);
+      view.setBigUint64(8, BigInt(Date.now() - startTime), true);
+      view.setFloat32(24, dt, true);
     }
-    if (mouseWasmPtr && mouseWasmPtr + 16 <= memory.buffer.byteLength) {
-      const view = new DataView(memory.buffer, mouseWasmPtr, 16);
-      view.setInt32(0, mouseX, true);
-      view.setInt32(4, mouseY, true);
-      view.setUint32(8, mouseButtonsMask, true);
-      view.setInt32(12, mouseWheelDelta, true);
+    if (keyboardPtr && keyboardPtr + 264 <= memory.buffer.byteLength) {
+      new Uint8Array(memory.buffer, keyboardPtr + 8, 256).set(keyBuffer);
     }
-    if (gamepadWasmPtr && gamepadWasmPtr + 4 <= memory.buffer.byteLength) {
-      new DataView(memory.buffer, gamepadWasmPtr, 4).setUint32(0, gamepadMask, true);
+    if (mousePtr && mousePtr + 28 <= memory.buffer.byteLength) {
+      const view = new DataView(memory.buffer, mousePtr, 28);
+      view.setInt32(8, mouseX, true);
+      view.setInt32(12, mouseY, true);
+      view.setUint32(16, mouseButtonsMask, true);
+      view.setInt32(20, mouseWheelX, true);
+      view.setInt32(24, mouseWheelY, true);
+    }
+    if (gamepadPtr && gamepadPtr + 28 <= memory.buffer.byteLength) {
+      const view = new DataView(memory.buffer, gamepadPtr, 28);
+      view.setUint32(8, gamepadMask, true);
+      new Int16Array(memory.buffer, gamepadPtr + 12, 8).set(gamepadAxes);
     }
 
-    let ret = 0;
+    let status = WUPDATE_OK;
     try {
-      ret = exports.wupdate();
+      status = exports.wupdate();
     } catch (err) {
       console.error('wupdate() threw an error:', err.message);
       exitCleanly();
       return;
     }
 
-    if (ret === 0) {
+    if (status === WUPDATE_EXIT || status < 0) {
       exitCleanly();
       return;
     }
 
-    statePtr = ret;
-    state = new WagnosticState(memory.buffer, statePtr);
-    mouseWheelDelta = 0;
+    // Reset relative wheel delta
+    mouseWheelX = 0;
+    mouseWheelY = 0;
 
-    const width = state.width || 320;
-    const height = state.height || 240;
-    const scale = forcedScale || 1;
+    // Render Surface if registered
+    if (surfacePtr && surfacePtr + 36 <= memory.buffer.byteLength) {
+      const sView = new DataView(memory.buffer, surfacePtr, 36);
+      const width = sView.getUint32(8, true) || 320;
+      const height = sView.getUint32(12, true) || 240;
+      const format = sView.getUint32(16, true) || WSURFACE_RGBA8888;
+      const stride = sView.getUint32(20, true) || width;
+      const pixelsPtr = sView.getUint32(24, true);
+      const scale = forcedScale || 1;
 
-    if (!window || currentWidth !== width || currentHeight !== height || currentScale !== scale) {
-      if (window && !window.destroyed) {
-        window.removeAllListeners('close');
-        try { window.destroy(); } catch (e) {}
-      }
+      if (!window || currentWidth !== width || currentHeight !== height || currentScale !== scale) {
+        if (window && !window.destroyed) {
+          window.removeAllListeners('close');
+          try { window.destroy(); } catch (e) {}
+        }
 
-      currentWidth = width;
-      currentHeight = height;
-      currentScale = scale;
+        currentWidth = width;
+        currentHeight = height;
+        currentScale = scale;
 
-      try {
-        window = sdl.video.createWindow({
-          title: 'Wagnostic Host (Node.js)',
-          width: width * scale,
-          height: height * scale,
-          resizable: true,
+        try {
+          window = sdl.video.createWindow({
+            title: 'Wagnostic 2.0 Host (Node.js)',
+            width: width * scale,
+            height: height * scale,
+            resizable: true,
+          });
+        } catch (err) {
+          console.error('Failed to create SDL window:', err.message);
+          exitCleanly();
+          return;
+        }
+
+        window.on('close', () => exitCleanly());
+
+        window.on('keyDown', (e) => {
+          const scancode = e.scancode;
+          if (scancode >= 0 && scancode < 256) keyBuffer[scancode] = 1;
+          updateGamepadKey(scancode, true);
         });
-      } catch (err) {
-        console.error('Failed to create SDL window:', err.message);
-        exitCleanly();
-        return;
+
+        window.on('keyUp', (e) => {
+          const scancode = e.scancode;
+          if (scancode >= 0 && scancode < 256) keyBuffer[scancode] = 0;
+          updateGamepadKey(scancode, false);
+        });
+
+        window.on('mouseMove', (e) => {
+          mouseX = Math.floor(e.x / currentScale);
+          mouseY = Math.floor(e.y / currentScale);
+        });
+
+        window.on('mouseButtonDown', (e) => {
+          if (e.button === 1) mouseButtonsMask |= 1;
+          if (e.button === 3) mouseButtonsMask |= 2;
+          if (e.button === 2) mouseButtonsMask |= 4;
+        });
+
+        window.on('mouseButtonUp', (e) => {
+          if (e.button === 1) mouseButtonsMask &= ~1;
+          if (e.button === 3) mouseButtonsMask &= ~2;
+          if (e.button === 2) mouseButtonsMask &= ~4;
+        });
+
+        window.on('mouseWheel', (e) => {
+          mouseWheelX += (e.dx || 0);
+          mouseWheelY += (e.dy || 0);
+        });
       }
 
-      window.on('close', () => {
-        exitCleanly();
-      });
+      if (window && !window.destroyed && isRunning && pixelsPtr > 0) {
+        let bppBytes = 4;
+        if (format === WSURFACE_RGB565) bppBytes = 2;
+        else if (format === WSURFACE_RGB888) bppBytes = 3;
 
-      window.on('keyDown', (e) => {
-        const scancode = e.scancode;
-        if (scancode >= 0 && scancode < 256) keyBuffer[scancode] = 1;
-        updateGamepadKey(scancode, true);
-      });
-
-      window.on('keyUp', (e) => {
-        const scancode = e.scancode;
-        if (scancode >= 0 && scancode < 256) keyBuffer[scancode] = 0;
-        updateGamepadKey(scancode, false);
-      });
-
-      window.on('mouseMove', (e) => {
-        mouseX = Math.floor(e.x / currentScale);
-        mouseY = Math.floor(e.y / currentScale);
-      });
-
-      window.on('mouseButtonDown', (e) => {
-        if (e.button === 1) mouseButtonsMask |= 1;
-        if (e.button === 3) mouseButtonsMask |= 2;
-        if (e.button === 2) mouseButtonsMask |= 4;
-      });
-
-      window.on('mouseButtonUp', (e) => {
-        if (e.button === 1) mouseButtonsMask &= ~1;
-        if (e.button === 3) mouseButtonsMask &= ~2;
-        if (e.button === 2) mouseButtonsMask &= ~4;
-      });
-
-      window.on('mouseWheel', (e) => {
-        mouseWheelDelta += (e.dy || 0);
-      });
-    }
-
-    if (window && !window.destroyed && isRunning) {
-      const vramOffset = state.vramOffset;
-      if (vramOffset > 0) {
-        const vramLength = getVramLength(state, width, height);
-        const vramPtr = statePtr + vramOffset;
-        const vramRaw = new Uint8Array(memory.buffer, vramPtr, vramLength);
-
-        let renderBuffer;
-        let renderFormat = 'rgba32';
-        let renderStride = width * 4;
+        const vramRaw = new Uint8Array(memory.buffer, pixelsPtr, stride * height * bppBytes);
         const requiredSize = width * height * 4;
 
         if (!conversionBuffer || conversionBuffer.length !== requiredSize) {
           conversionBuffer = Buffer.alloc(requiredSize);
         }
-        convertPixelsToRgba32(state, vramRaw, width, height, conversionBuffer);
-        renderBuffer = conversionBuffer;
+        convertSurfaceToRgba32(format, vramRaw, width, height, stride, conversionBuffer);
 
         try {
-          window.render(width, height, renderStride, renderFormat, renderBuffer);
+          window.render(width, height, width * 4, 'rgba32', conversionBuffer);
         } catch (err) {}
       }
     }

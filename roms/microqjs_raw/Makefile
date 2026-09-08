@@ -29,6 +29,7 @@ CFLAGS = \
 	-w \
 	-isystem include \
 	-I$(MQJS) \
+	-I../../include \
 	-I.
 
 LDFLAGS = \

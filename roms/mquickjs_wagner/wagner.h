@@ -23,9 +23,6 @@
 // WAGNOSTIC RUNTIME LOW-LEVEL INTERFACE
 // ============================================
 
-#ifndef WAGNOSTIC_H
-#define WAGNOSTIC_H
-
 #ifndef WAGNOSTIC_RECT_DEFINED
 #define WAGNOSTIC_RECT_DEFINED
 typedef struct {
@@ -56,84 +53,21 @@ typedef struct {
 
 #define W_MAX_DIRTY_RECTS 32
 
-extern void* wextension(const char* name, void* ptr);
-
-typedef struct {
-    int32_t x, y;
-    uint32_t buttons;
-    int32_t wheel;
-} WagnosticMouseState;
-
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} WagnosticState;
+#include "wagnostic.h"
+#include "surface.h"
+#include "clock.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "gamepad.h"
 
 typedef struct {
     uint32_t count;
     Rect rects[W_MAX_DIRTY_RECTS];
 } WagnosticDirtyList;
 
-typedef struct {
-    uint16_t x, y;            // Scissor position (VRAM region)
-    uint16_t width, height;   // Scissor size (VRAM region)
-    uint32_t shader_ptr;      // Offset to null-terminated GLSL string
-    uint32_t params_ptr;      // Offset to float array 'u_params'
-} WagnosticShaderJob;
-
-#define SET_BPP(s, bpp_val) do { \
-    if ((bpp_val) == 32) { \
-        (s)->r_bits=8;(s)->r_shift=0; \
-        (s)->g_bits=8;(s)->g_shift=8; \
-        (s)->b_bits=8;(s)->b_shift=16; \
-        (s)->a_bits=8;(s)->a_shift=24; \
-    } else if ((bpp_val) == 16) { \
-        (s)->r_bits=5;(s)->r_shift=11; \
-        (s)->g_bits=6;(s)->g_shift=5; \
-        (s)->b_bits=5;(s)->b_shift=0; \
-        (s)->a_bits=0;(s)->a_shift=0; \
-    } else if ((bpp_val) == 8) { \
-        (s)->r_bits=3;(s)->r_shift=5; \
-        (s)->g_bits=3;(s)->g_shift=2; \
-        (s)->b_bits=2;(s)->b_shift=0; \
-        (s)->a_bits=0;(s)->a_shift=0; \
-    } \
-} while(0)
-
-#define W_VRAM(s)       ((uint8_t*)(s) + (s)->vram_offset)
-
-static inline void w_setup(WagnosticState *s, const char* title, int width, int height, int bpp, int scale) {
-    (void)title; (void)scale;
-    s->width = (uint32_t)width;
-    s->height = (uint32_t)height;
-    SET_BPP(s, bpp);
-}
-
-static inline void w_redraw(WagnosticState *s, WagnosticDirtyList *dl) {
-    (void)dl;
-    Rect r = { 0, 0, (int)s->width, (int)s->height };
-    wextension("std:dirty", &r);
-}
-
-static inline void w_no_redraw(WagnosticState *s, WagnosticDirtyList *dl) {
-    (void)s; (void)dl;
-}
-
-static inline void w_redraw_rect(WagnosticState *s, WagnosticDirtyList *dl, int x, int y, int w, int h) {
-    (void)s; (void)dl;
-    Rect r = { x, y, w, h };
-    wextension("std:dirty", &r);
-}
-
 #define W_KEY_DOWN(s, scancode) ((s)->keys[scancode] != 0)
 #define W_MOUSE_LEFT(s) (((s)->mouse_buttons & 1) != 0)
 #define W_MOUSE_RIGHT(s) (((s)->mouse_buttons & 2) != 0)
-
-#endif // WAGNOSTIC_H
 
 // Default Configuration (RGBA8888, 320x240)
 #ifndef WAGNER_CFG_W
@@ -193,28 +127,29 @@ static inline void w_redraw_rect(WagnosticState *s, WagnosticDirtyList *dl, int 
 // Wagnostic new API: ROM must provide a WagnosticState struct
 #define WAGNER_VRAM_SIZE (WAGNER_CFG_BPP >= 8 ? (WAGNER_CFG_W * WAGNER_CFG_H * (WAGNER_CFG_BPP == 24 ? 3 : (WAGNER_CFG_BPP / 8))) : ((WAGNER_CFG_W * WAGNER_CFG_H * WAGNER_CFG_BPP + 7) / 8))
 
-static uint8_t* _wagner_keys_ptr = NULL;
-static WagnosticMouseState* _wagner_mouse_ptr = NULL;
-static uint32_t* _wagner_gamepad_ptr = NULL;
+static wsurface_t* _wagner_surface_ptr = NULL;
+static wkeyboard_t* _wagner_keys_ptr = NULL;
+static wmouse_t* _wagner_mouse_ptr = NULL;
+static wgamepad_t* _wagner_gamepad_ptr = NULL;
+static wclock_t* _wagner_clock_ptr = NULL;
 static uint32_t _wagner_frame_counter = 0;
 
 static struct {
-    WagnosticState state;
     WagnosticDirtyList dirty_list;
     uint8_t vram[WAGNER_VRAM_SIZE];
 } _wagner_rom;
 
-#define w_width _wagner_rom.state.width
-#define w_height _wagner_rom.state.height
+#define w_width (_wagner_surface_ptr ? _wagner_surface_ptr->width : WAGNER_CFG_W)
+#define w_height (_wagner_surface_ptr ? _wagner_surface_ptr->height : WAGNER_CFG_H)
 #define w_bpp WAGNER_CFG_BPP
 #define w_scale 1
 #define w_mouse_x (_wagner_mouse_ptr ? _wagner_mouse_ptr->x : 0)
 #define w_mouse_y (_wagner_mouse_ptr ? _wagner_mouse_ptr->y : 0)
 #define w_mouse_buttons (_wagner_mouse_ptr ? _wagner_mouse_ptr->buttons : 0)
-#define w_keys _wagner_keys_ptr
+#define w_keys (_wagner_keys_ptr ? _wagner_keys_ptr->keys : NULL)
 #define w_ticks _wagner_frame_counter
 #define w_target_fps 60
-#define w_gamepad_buttons (_wagner_gamepad_ptr ? *_wagner_gamepad_ptr : 0)
+#define w_gamepad_buttons (_wagner_gamepad_ptr ? _wagner_gamepad_ptr->buttons : 0)
 #define w_unique 12345
 #define w_vram _wagner_rom.vram
 
@@ -1657,32 +1592,33 @@ static int _wagner_skip_frame = 0;
 
 static inline void no_draw(void) { _wagner_skip_frame = 1; }
 
-int wupdate() {
+int32_t wupdate(void) {
     static int init = 0;
     _wagner_frame_counter++;
     if (!init) {
         init = 1;
-        _wagner_keys_ptr = (uint8_t*)wextension("std:keyboard", NULL);
-        _wagner_mouse_ptr = (WagnosticMouseState*)wextension("std:mouse", NULL);
-        _wagner_gamepad_ptr = (uint32_t*)wextension("std:gamepad", NULL);
+        _wagner_surface_ptr  = (wsurface_t*)wextension("std:surface", 1);
+        _wagner_keys_ptr     = (wkeyboard_t*)wextension("std:keyboard", 1);
+        _wagner_mouse_ptr    = (wmouse_t*)wextension("std:mouse", 1);
+        _wagner_gamepad_ptr  = (wgamepad_t*)wextension("std:gamepad", 1);
+        _wagner_clock_ptr    = (wclock_t*)wextension("std:clock", 1);
 
-        wagner.width  = 320; wagner.height = 240;
-        wagner.bpp    = 16;  wagner.scale  = 4;
+        if (_wagner_surface_ptr) {
+            _wagner_surface_ptr->width  = WAGNER_CFG_W;
+            _wagner_surface_ptr->height = WAGNER_CFG_H;
+            _wagner_surface_ptr->stride = WAGNER_CFG_W;
+            _wagner_surface_ptr->format = (WAGNER_CFG_BPP == 32) ? WSURFACE_RGBA8888 : ((WAGNER_CFG_BPP == 24) ? WSURFACE_RGB888 : WSURFACE_RGB565);
+            _wagner_surface_ptr->pixels = (uint32_t)_wagner_rom.vram;
+        }
+
+        wagner.width  = WAGNER_CFG_W; wagner.height = WAGNER_CFG_H;
+        wagner.bpp    = WAGNER_CFG_BPP;  wagner.scale  = 1;
         wagner.frame_count = 0; wagner.fps = 0;
         wagner.delta_time = 0.016f;
         wagner.mouse  = vec2(0, 0); wagner.pmouse = vec2(0, 0);
         wagner.mouse_pressed = false; wagner.mouse_released = false;
         wagner.mouse_down = false;
         
-        _wagner_rom.state.vram_offset = (uint32_t)((uint8_t*)_wagner_rom.vram - (uint8_t*)&_wagner_rom.state);
-        _wagner_rom.state.r_bits = WAGNER_CFG_R_BITS;
-        _wagner_rom.state.r_shift = WAGNER_CFG_R_SHIFT;
-        _wagner_rom.state.g_bits = WAGNER_CFG_G_BITS;
-        _wagner_rom.state.g_shift = WAGNER_CFG_G_SHIFT;
-        _wagner_rom.state.b_bits = WAGNER_CFG_B_BITS;
-        _wagner_rom.state.b_shift = WAGNER_CFG_B_SHIFT;
-        _wagner_rom.state.a_bits = WAGNER_CFG_A_BITS;
-        _wagner_rom.state.a_shift = WAGNER_CFG_A_SHIFT;
         wagner.canvas_pixels = w_vram;
         screen.pixels = w_vram; screen.width = w_width; screen.height = w_height;
         screen.stride = w_width; screen.bpp = WAGNER_CFG_BPP;
@@ -1690,7 +1626,6 @@ int wupdate() {
         screen.g_bits = WAGNER_CFG_G_BITS; screen.g_shift = WAGNER_CFG_G_SHIFT;
         screen.b_bits = WAGNER_CFG_B_BITS; screen.b_shift = WAGNER_CFG_B_SHIFT;
         screen.a_bits = WAGNER_CFG_A_BITS; screen.a_shift = WAGNER_CFG_A_SHIFT;
-        w_setup(&_wagner_rom.state, WAGNER_TITLE, WAGNER_CFG_W, WAGNER_CFG_H, WAGNER_CFG_BPP, WAGNER_CFG_SCALE);
         wagner.width = w_width; wagner.height = w_height;
         wagner.bpp = w_bpp; wagner.scale = w_scale;
         screen.width = w_width; screen.height = w_height;
@@ -1736,13 +1671,7 @@ int wupdate() {
         _fps_timer = now;
     }
     
-    if (_wagner_skip_frame) {
-        _wagner_skip_frame = 0;
-        w_no_redraw(&_wagner_rom.state, &_wagner_rom.dirty_list);
-    } else {
-        w_redraw(&_wagner_rom.state, &_wagner_rom.dirty_list);
-    }
-    return (int)&_wagner_rom.state;
+    return WUPDATE_OK;
 }
 
 #endif // WAGNER_H

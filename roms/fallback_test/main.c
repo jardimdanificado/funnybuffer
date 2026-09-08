@@ -1,46 +1,36 @@
-#include <stdint.h>
+#include "wagnostic.h"
+#include "surface.h"
 
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} State;
-
-static struct {
-    State s;
-    uint8_t vram[320 * 240 * 1];
-} rom;
-
+static wsurface_t *surface;
 static int initialized = 0;
 static uint32_t ticks = 0;
 
-int wupdate() {
+int32_t wupdate(void) {
     ticks++;
     if (!initialized) {
-        rom.s.width = 320;
-        rom.s.height = 240;
-        rom.s.r_bits = 3; rom.s.r_shift = 5;
-        rom.s.g_bits = 3; rom.s.g_shift = 2;
-        rom.s.b_bits = 2; rom.s.b_shift = 0;
-        rom.s.vram_offset = (uint32_t)((uint8_t*)rom.vram - (uint8_t*)&rom.s);
-
+        surface = (wsurface_t*)wextension("std:surface", 1);
+        if (surface) {
+            surface->width = 320;
+            surface->height = 240;
+            surface->stride = 320;
+            surface->format = WSURFACE_RGB565;
+        }
         initialized = 1;
     }
 
-    uint8_t* fb = (uint8_t*)rom.vram;
+    if (!surface || !surface->pixels) return WUPDATE_ERROR;
+
+    uint16_t* fb = (uint16_t*)surface->pixels;
     static uint32_t last_tick = 0;
-    static uint8_t color = 0;
+    static uint16_t color = 0x1F;
 
     if (ticks - last_tick > 60) {
-        color += 32;
+        color = (color == 0x1F) ? 0xF800 : (color == 0xF800 ? 0x07E0 : 0x1F);
         last_tick = ticks;
     }
 
     for (int i = 0; i < 320 * 240; i++)
         fb[i] = color;
 
-    return (int)&rom.s;
+    return WUPDATE_OK;
 }

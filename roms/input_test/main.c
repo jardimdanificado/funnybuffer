@@ -1,68 +1,32 @@
-typedef struct { int x, y, w, h; } Rect;
 // input_test — Tests all input methods
 
-#include <stdint.h>
-#include <stddef.h>
+#include "wagnostic.h"
+#include "surface.h"
+#include "clock.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "gamepad.h"
 
-extern void* wextension(const char* name, void* ptr);
+static wsurface_t  *surface;
+static wclock_t    *clock_ext;
+static wkeyboard_t *keyboard;
+static wmouse_t    *mouse;
+static wgamepad_t  *gamepad;
 
-/* SET_BPP(s, bpp) — sets channel bits/shifts for standard pixel formats.
- * The host derives BPP from these fields; there is no separate bpp field. */
-#define SET_BPP(s, bpp_val) do { \
-    if ((bpp_val) == 32) { \
-        (s)->r_bits=8;(s)->r_shift=0; \
-        (s)->g_bits=8;(s)->g_shift=8; \
-        (s)->b_bits=8;(s)->b_shift=16; \
-        (s)->a_bits=8;(s)->a_shift=24; \
-    } else if ((bpp_val) == 16) { \
-        (s)->r_bits=5;(s)->r_shift=11; \
-        (s)->g_bits=6;(s)->g_shift=5; \
-        (s)->b_bits=5;(s)->b_shift=0; \
-        (s)->a_bits=0;(s)->a_shift=0; \
-    } else if ((bpp_val) == 8) { \
-        (s)->r_bits=3;(s)->r_shift=5; \
-        (s)->g_bits=3;(s)->g_shift=2; \
-        (s)->b_bits=2;(s)->b_shift=0; \
-        (s)->a_bits=0;(s)->a_shift=0; \
-    } \
-} while(0)
-
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} State;
-
-typedef struct {
-    int32_t x, y;
-    uint32_t buttons;
-    int32_t wheel;
-} MouseState;
-
-static struct {
-    State s;
-    uint8_t vram[320 * 240 * 2];
-} rom;
-
-static uint16_t* fb = (uint16_t*)rom.vram;
-static uint8_t keys_buf[256];
-static MouseState mouse_buf;
-static uint32_t gamepad_buf;
-static uint8_t* keys = NULL;
-static MouseState* mouse = NULL;
-static uint32_t* gamepad = NULL;
 static uint32_t ticks = 0;
+static int initialized = 0;
 
 static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
 static void set_pixel(int x, int y, uint16_t c) {
-    if (x >= 0 && x < 320 && y >= 0 && y < 240)
-        fb[y * 320 + x] = c;
+    if (!surface || !surface->pixels) return;
+    if (x >= 0 && x < (int)surface->width && y >= 0 && y < (int)surface->height) {
+        uint16_t *fb = (uint16_t*)surface->pixels;
+        uint32_t stride = surface->stride ? surface->stride : surface->width;
+        fb[y * stride + x] = c;
+    }
 }
 
 static void fill_rect(int rx, int ry, int rw, int rh, uint16_t c) {
@@ -122,7 +86,7 @@ static void draw_keyboard_section(void) {
     for (int i = 0; i < 256; i++) {
         int cx = i % cols, cy = i / cols;
         int px = ox + cx * cell_w, py = oy + cy * cell_h;
-        int is_pressed = keys && keys[i];
+        int is_pressed = keyboard && keyboard->keys[i];
         uint16_t col = is_pressed ? rgb565(0, 220, 80) : rgb565(60, 60, 70);
         fill_rect(px, py, cell_w - 1, cell_h - 1, col);
     }
@@ -141,7 +105,7 @@ static void draw_mouse_section(void) {
     int mx = mouse ? mouse->x : 0;
     int my = mouse ? mouse->y : 0;
     uint32_t mbtns = mouse ? mouse->buttons : 0;
-    int mwheel = mouse ? mouse->wheel : 0;
+    int mwheel = mouse ? mouse->wheel_y : 0;
 
     int cx = ox + 5 + (mx * (w - 10)) / 320;
     int cy = oy + 5 + (my * (h - 20)) / 240;
@@ -149,8 +113,8 @@ static void draw_mouse_section(void) {
     draw_vline(cx, cy - 8, cy + 8, rgb565(255, 255, 255));
     fill_rect(cx - 1, cy - 1, 3, 3, rgb565(255, 0, 0));
 
-    uint16_t lc = (mbtns & 1) ? rgb565(255, 50, 50) : rgb565(80, 80, 80);
-    uint16_t rc = (mbtns & 2) ? rgb565(50, 50, 255) : rgb565(80, 80, 80);
+    uint16_t lc = (mbtns & WMOUSE_BTN_LEFT) ? rgb565(255, 50, 50) : rgb565(80, 80, 80);
+    uint16_t rc = (mbtns & WMOUSE_BTN_RIGHT) ? rgb565(50, 50, 255) : rgb565(80, 80, 80);
     fill_rect(ox + 10, oy + h - 18, 25, 12, lc);
     fill_rect(ox + 40, oy + h - 18, 25, 12, rc);
 
@@ -164,50 +128,53 @@ static void draw_gamepad_section(void) {
     fill_rect(ox, oy, w, h, rgb565(20, 20, 30));
     draw_hline(ox, ox + w, oy, rgb565(80, 80, 80));
 
-    uint32_t gp = gamepad ? *gamepad : 0;
+    uint32_t gp = gamepad ? gamepad->buttons : 0;
 
     int bx = ox + 10, by = oy + 10;
     uint16_t dc = rgb565(100, 100, 100);
-    fill_rect(bx + 10, by, 10, 10, (gp & 1) ? rgb565(0,255,0) : dc);
-    fill_rect(bx + 10, by + 22, 10, 10, (gp & 2) ? rgb565(0,255,0) : dc);
-    fill_rect(bx, by + 11, 10, 10, (gp & 4) ? rgb565(0,255,0) : dc);
-    fill_rect(bx + 20, by + 11, 10, 10, (gp & 8) ? rgb565(0,255,0) : dc);
+    fill_rect(bx + 10, by, 10, 10, (gp & WGAMEPAD_BTN_DPAD_UP) ? rgb565(0,255,0) : dc);
+    fill_rect(bx + 10, by + 22, 10, 10, (gp & WGAMEPAD_BTN_DPAD_DOWN) ? rgb565(0,255,0) : dc);
+    fill_rect(bx, by + 11, 10, 10, (gp & WGAMEPAD_BTN_DPAD_LEFT) ? rgb565(0,255,0) : dc);
+    fill_rect(bx + 20, by + 11, 10, 10, (gp & WGAMEPAD_BTN_DPAD_RIGHT) ? rgb565(0,255,0) : dc);
     fill_rect(bx + 10, by + 11, 10, 10, rgb565(50,50,50));
 
-    fill_rect(bx + 45, by + 5, 15, 15, (gp & 0x10) ? rgb565(255,50,50) : dc);
-    fill_rect(bx + 65, by + 5, 15, 15, (gp & 0x20) ? rgb565(50,50,255) : dc);
-    fill_rect(bx + 45, by + 25, 15, 10, (gp & 0x40) ? rgb565(200,200,0) : dc);
-    fill_rect(bx + 65, by + 25, 15, 10, (gp & 0x80) ? rgb565(200,200,0) : dc);
+    fill_rect(bx + 45, by + 5, 15, 15, (gp & WGAMEPAD_BTN_A) ? rgb565(255,50,50) : dc);
+    fill_rect(bx + 65, by + 5, 15, 15, (gp & WGAMEPAD_BTN_B) ? rgb565(50,50,255) : dc);
+    fill_rect(bx + 45, by + 25, 15, 10, (gp & WGAMEPAD_BTN_SELECT) ? rgb565(200,200,0) : dc);
+    fill_rect(bx + 65, by + 25, 15, 10, (gp & WGAMEPAD_BTN_START) ? rgb565(200,200,0) : dc);
 
     draw_number(bx, by + 50, (int)gp, rgb565(180, 180, 180));
 }
 
-static int initialized = 0;
-
-int wupdate() {
+int32_t wupdate(void) {
     ticks++;
     if (!initialized) {
-        rom.s.width = 320;
-        rom.s.height = 240;
-        rom.s.r_bits = 5; rom.s.r_shift = 11;
-        rom.s.g_bits = 6; rom.s.g_shift = 5;
-        rom.s.b_bits = 5; rom.s.b_shift = 0;
-        rom.s.vram_offset = (uint32_t)((uint8_t*)rom.vram - (uint8_t*)&rom.s);
+        surface   = (wsurface_t*)wextension("std:surface", 1);
+        clock_ext = (wclock_t*)wextension("std:clock", 1);
+        keyboard  = (wkeyboard_t*)wextension("std:keyboard", 1);
+        mouse     = (wmouse_t*)wextension("std:mouse", 1);
+        gamepad   = (wgamepad_t*)wextension("std:gamepad", 1);
 
-        keys = (uint8_t*)wextension("std:keyboard", keys_buf);
-        mouse = (MouseState*)wextension("std:mouse", &mouse_buf);
-        gamepad = (uint32_t*)wextension("std:gamepad", &gamepad_buf);
+        if (surface) {
+            surface->width = 320;
+            surface->height = 240;
+            surface->stride = 320;
+            surface->format = WSURFACE_RGB565;
+        }
 
         initialized = 1;
     }
 
+    if (!surface || !surface->pixels) return WUPDATE_ERROR;
+
+    uint16_t* fb = (uint16_t*)surface->pixels;
     for (int i = 0; i < 320 * 240; i++) fb[i] = rgb565(15, 15, 20);
 
     draw_keyboard_section();
     draw_mouse_section();
     draw_gamepad_section();
 
-    if (keys && keys[41]) return 0;
+    if (keyboard && keyboard->keys[41]) return WUPDATE_EXIT; // Escape
 
-    return (int)&rom.s;
+    return WUPDATE_OK;
 }

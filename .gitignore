@@ -24,3 +24,4 @@ emulators/wasm3/wasm3
 *.tar
 node_modules
 /build/
+mquickjs/

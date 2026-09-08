@@ -121,8 +121,8 @@ int main(int argc, char** argv) {
     uint64_t frames_run = 0;
 
     while (max_frames == 0 || frames_run < max_frames) {
-        uint32_t current_ticks = (uint32_t)(frames_run * 1000 / 60);
-        wagnostic_set_ticks(ctx, current_ticks);
+        uint64_t current_ticks = (uint64_t)(frames_run * 1000 / 60);
+        wagnostic_set_ticks(ctx, current_ticks, 1.0f / 60.0f);
 
         int ok = wagnostic_step(ctx);
         if (!ok) {

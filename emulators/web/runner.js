@@ -1,26 +1,33 @@
-// Wagnostic Web Runner - runs WASM ROMs in the browser
-// Uses WebAssembly API + Canvas 2D
+// Wagnostic 2.0 Web Runner - runs WASM ROMs in the browser
+// Implements Wagnostic 2.0 ABI: wextension() + wupdate()
 (function () {
   'use strict';
 
-  // ── Constants ──────────────────────────────────────────────────────────
-  const DEFAULT_WIDTH  = 320;
-  const DEFAULT_HEIGHT = 240;
-  const DEFAULT_BPP    = 32;
-  const DEFAULT_SCALE  = 1;
-  const MAX_DIRTY_RECTS = 32;
-  const RECT_STRIDE     = 16; // 4 x i32 per rect (x, y, w, h)
-  const KEYS_COUNT      = 256;
+  // ── Constants & Formats ────────────────────────────────────────────────
+  const WSURFACE_RGBA8888 = 1;
+  const WSURFACE_BGRA8888 = 2;
+  const WSURFACE_RGB565   = 3;
+  const WSURFACE_RGB888   = 4;
+
+  const WUPDATE_OK    =  0;
+  const WUPDATE_EXIT  =  1;
+  const WUPDATE_ERROR = -1;
 
   // Gamepad button bitmasks
-  const GP_UP    = 1 << 0;
-  const GP_DOWN  = 1 << 1;
-  const GP_LEFT  = 1 << 2;
-  const GP_RIGHT = 1 << 3;
-  const GP_A     = 1 << 4;
-  const GP_B     = 1 << 5;
-  const GP_SEL   = 1 << 6;
-  const GP_START = 1 << 7;
+  const GP_A             = 1 << 0;
+  const GP_B             = 1 << 1;
+  const GP_X             = 1 << 2;
+  const GP_Y             = 1 << 3;
+  const GP_LEFTSHOULDER  = 1 << 4;
+  const GP_RIGHTSHOULDER = 1 << 5;
+  const GP_SEL           = 1 << 6;
+  const GP_START         = 1 << 7;
+  const GP_LEFTSTICK     = 1 << 8;
+  const GP_RIGHTSTICK    = 1 << 9;
+  const GP_UP            = 1 << 10;
+  const GP_DOWN          = 1 << 11;
+  const GP_LEFT          = 1 << 12;
+  const GP_RIGHT         = 1 << 13;
 
   // KeyboardEvent.code -> USB HID scancode mapping
   const HID_SCANCODES = {
@@ -57,7 +64,6 @@
     'AltLeft': 0xE2, 'AltRight': 0xE6, 'MetaLeft': 0xE3, 'MetaRight': 0xE7
   };
 
-  // Gamepad button name -> bit
   const GP_BTN_MAP = {
     'up': GP_UP, 'down': GP_DOWN, 'left': GP_LEFT, 'right': GP_RIGHT,
     'a': GP_A, 'b': GP_B, 'select': GP_SEL, 'start': GP_START
@@ -66,7 +72,7 @@
   // ── DOM Elements ───────────────────────────────────────────────────────
   const fileInput   = document.getElementById('wasmInput');
   const canvas      = document.getElementById('gameCanvas');
-  const ctx         = canvas.getContext('2d', { alpha: false, desynchronized: true });
+  const ctx         = canvas ? canvas.getContext('2d', { alpha: false, desynchronized: true }) : null;
   const emptyState  = document.getElementById('emptyState');
 
   // State
@@ -74,763 +80,198 @@
   let wasmMemory   = null;
   let wasmExports  = null;
   let running      = false;
-  let statePtr     = 0;
-  let tarBuffer    = null;
+
+  let surfacePtr   = 0;
+  let clockPtr     = 0;
+  let keyboardPtr  = 0;
+  let mousePtr     = 0;
+  let gamepadPtr   = 0;
+  let audioPtr     = 0;
+
+  let defaultFbPtr    = 0;
+  let defaultDirtyPtr = 0;
+  let defaultAudioPtr = 0;
+  let arenaOffset     = 0;
 
   // Screen config tracking
   let prevWidth  = 0;
   let prevHeight = 0;
-  let prevBpp    = 0;
   let prevScale  = 0;
 
   // Input state
   let mouseX       = 0;
   let mouseY       = 0;
   let mouseButtons = 0;
-  let mouseWheel   = 0;
-  let keysDown     = new Uint8Array(KEYS_COUNT);
+  let mouseWheelX  = 0;
+  let mouseWheelY  = 0;
+  let keysDown     = new Uint8Array(256);
   let gamepadBtns  = 0;
-  let keyboardWasmPtr = 0;
-  let mouseWasmPtr = 0;
-  let gamepadWasmPtr = 0;
+  let gamepadAxes  = new Int16Array(8);
 
   // Pre-allocated render buffers
   let imageData = null;
 
-  // Pixel lookup tables (LUTs) for fast format conversion
-
-
   // Timing
   let startTime = performance.now();
-  let lastFrameTime = 0;
+  let lastFrameTime = performance.now();
 
-  // ── Helpers ────────────────────────────────────────────────────────────
+  // Audio Context
+  let audioCtx = null;
+  let audioNode = null;
 
-  function getMem() {
-    return new DataView(wasmMemory.buffer);
-  }
-
-  function computeBpp(s) {
-    // Derive BPP from the highest (shift + bits) of any active channel.
-    // x_bits/x_shift are for padding/unused channels that still consume bits.
-    let maxBit = 0;
-    function check(bits, shift) {
-      if (bits > 0 && (shift + bits) > maxBit) maxBit = shift + bits;
-    }
-    check(s.rBits, s.rShift);
-    check(s.gBits, s.gShift);
-    check(s.bBits, s.bShift);
-    check(s.aBits, s.aShift);
-    check(s.xBits, s.xShift);
-    if (maxBit <= 0)  return 32;  // no channel info → assume 32bpp
-    if (maxBit <= 1)  return 1;
-    if (maxBit <= 2)  return 2;
-    if (maxBit <= 4)  return 4;
-    if (maxBit <= 8)  return 8;
-    if (maxBit <= 16) return 16;
-    if (maxBit <= 24) return 24;
-    if (maxBit <= 32) return 32;
-    return 64;
-  }
-
-  function readGlobals() {
-    if (!statePtr) return {};
-    const mem = getMem();
-    const ptr = statePtr;
-
-    let s = {
-      w:             mem.getUint32(ptr + 0, true),
-      h:             mem.getUint32(ptr + 4, true),
-      rBits:         mem.getUint32(ptr + 8, true),
-      rShift:        mem.getUint32(ptr + 12, true),
-      gBits:         mem.getUint32(ptr + 16, true),
-      gShift:        mem.getUint32(ptr + 20, true),
-      bBits:         mem.getUint32(ptr + 24, true),
-      bShift:        mem.getUint32(ptr + 28, true),
-      aBits:         mem.getUint32(ptr + 32, true),
-      aShift:        mem.getUint32(ptr + 36, true),
-      vramOffset:    mem.getUint32(ptr + 40, true),
-      scale: 1,
-    };
-
-    // Derive BPP from channel info
-    s.bpp = computeBpp(s);
-
-    // If no channel bits set, fill in defaults based on computed BPP
-    if (!s.rBits && !s.gBits && !s.bBits && !s.aBits) {
-        if (s.bpp === 32) {
-            s.aBits = 8; s.aShift = 24; s.bBits = 8; s.bShift = 16; s.gBits = 8; s.gShift = 8; s.rBits = 8; s.rShift = 0;
-        } else if (s.bpp === 24) {
-            s.bBits = 8; s.bShift = 16; s.gBits = 8; s.gShift = 8; s.rBits = 8; s.rShift = 0;
-        } else if (s.bpp === 16) {
-            s.rBits = 5; s.rShift = 11; s.gBits = 6; s.gShift = 5; s.bBits = 5; s.bShift = 0;
-        } else if (s.bpp === 8) {
-            s.rBits = 3; s.rShift = 5; s.gBits = 3; s.gShift = 2; s.bBits = 2; s.bShift = 0;
-        } else if (s.bpp === 4 || s.bpp === 2 || s.bpp === 1) {
-            s.aBits = s.bpp; s.aShift = 0;
+  function initAudio() {
+    if (audioCtx) return;
+    try {
+      const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) return;
+      audioCtx = new AudioContextClass({ sampleRate: 44100 });
+      const bufferSize = 1024;
+      audioNode = audioCtx.createScriptProcessor(bufferSize, 0, 2);
+      audioNode.onaudioprocess = function (e) {
+        const outL = e.outputBuffer.getChannelData(0);
+        const outR = e.outputBuffer.getChannelData(1);
+        if (!wasmMemory || !audioPtr) {
+          outL.fill(0);
+          outR.fill(0);
+          return;
         }
+
+        const view = new DataView(wasmMemory.buffer, audioPtr, 36);
+        const channels = view.getUint32(12, true) || 2;
+        const format = view.getUint32(16, true) || 1;
+        const bufPtr = view.getUint32(20, true);
+        const capacity = view.getUint32(24, true) || 4096;
+        let writeIdx = view.getUint32(28, true);
+        let readIdx = view.getUint32(32, true);
+
+        let available = (writeIdx >= readIdx) ? (writeIdx - readIdx) : 0;
+        if (available > capacity) available = capacity;
+
+        const count = Math.min(outL.length, available);
+        if (format === 1 && bufPtr > 0) { // WAUDIO_F32
+          const f32 = new Float32Array(wasmMemory.buffer, bufPtr, capacity * channels);
+          for (let i = 0; i < count; i++) {
+            const frame = (readIdx + i) % capacity;
+            outL[i] = f32[frame * channels + 0];
+            outR[i] = (channels > 1) ? f32[frame * channels + 1] : f32[frame * channels + 0];
+          }
+        }
+        for (let i = count; i < outL.length; i++) {
+          outL[i] = 0;
+          outR[i] = 0;
+        }
+        view.setUint32(32, readIdx + count, true);
+      };
+      audioNode.connect(audioCtx.destination);
+    } catch (e) {
+      console.warn('WebAudio init failed:', e);
     }
-    return s;
+  }
+
+  function resumeAudio() {
+    if (audioCtx && audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+  }
+
+  function hostAlloc(size, align = 4) {
+    if (arenaOffset === 0) {
+      arenaOffset = (wasmMemory.buffer.byteLength > 1048576) ? 0x20000 : 0x8000;
+    }
+    if (align > 1) {
+      arenaOffset = (arenaOffset + align - 1) & ~(align - 1);
+    }
+    const ptr = arenaOffset;
+    arenaOffset += size;
+    return ptr;
+  }
+
+  function readWasmString(ptr) {
+    if (!ptr || !wasmMemory) return '';
+    const bytes = new Uint8Array(wasmMemory.buffer, ptr);
+    let len = 0;
+    while (len < 1024 && bytes[len] !== 0) len++;
+    return new TextDecoder().decode(bytes.subarray(0, len));
   }
 
   // ── Canvas / Screen ────────────────────────────────────────────────────
 
   function resizeCanvas(w, h, scale) {
-    // Defensive: a bad or absent ROM could give us zero/NaN dimensions,
-    // which would make createImageData throw "Out of memory". Clamp to
-    // sane bounds before doing anything.
-    if (!Number.isFinite(w) || w <= 0)   w = DEFAULT_WIDTH;
-    if (!Number.isFinite(h) || h <= 0)   h = DEFAULT_HEIGHT;
+    if (!Number.isFinite(w) || w <= 0)   w = 320;
+    if (!Number.isFinite(h) || h <= 0)   h = 240;
     if (!Number.isFinite(scale) || scale <= 0) scale = 1;
-    if (w > 8192) w = 8192;
-    if (h > 8192) h = 8192;
-    canvas.width  = w;
-    canvas.height = h;
-    canvas.style.width  = (w * scale) + 'px';
-    canvas.style.height = (h * scale) + 'px';
-    canvas.style.imageRendering = 'pixelated';
-    imageData = ctx.createImageData(w, h);
+    if (canvas) {
+      canvas.width  = w;
+      canvas.height = h;
+      canvas.style.width  = (w * scale) + 'px';
+      canvas.style.height = (h * scale) + 'px';
+      canvas.style.imageRendering = 'pixelated';
+      imageData = ctx.createImageData(w, h);
+    }
     prevWidth  = w;
     prevHeight = h;
     prevScale  = scale;
   }
 
-  const FMT_GENERIC     = 0;
-  const FMT_RGBA8888_LE = 1;
-  const FMT_BGRA8888_LE = 2;
-  const FMT_RGBX8888_LE = 3;
-  const FMT_BGRX8888_LE = 4;
-  const FMT_RGB888      = 5;
-  const FMT_BGR888      = 6;
-  const FMT_RGB565      = 7;
-  const FMT_BGR565      = 8;
-  const FMT_RGB555      = 9;
-  const FMT_BGR555      = 10;
-  const FMT_RGB444      = 11;
-  const FMT_RGBA4444    = 12;
-  const FMT_ARGB4444    = 13;
-  const FMT_RGB333      = 14;
-  const FMT_RGB332      = 15;
-  const FMT_RGB222      = 16;
-  const FMT_RGBA2222    = 17;
-  const FMT_RGB111      = 18;
-  const FMT_GRAY8       = 19;
-  const FMT_RGB666      = 20;
-  const FMT_MONO1       = 21;
-  const FMT_MONO2       = 22;
-  const FMT_MONO4       = 23;
+  function renderSurface(surfaceOffset) {
+    if (!wasmMemory || !surfaceOffset || !ctx) return;
+    const view = new DataView(wasmMemory.buffer, surfaceOffset, 36);
+    const width = view.getUint32(8, true) || 320;
+    const height = view.getUint32(12, true) || 240;
+    const format = view.getUint32(16, true) || WSURFACE_RGBA8888;
+    const stride = view.getUint32(20, true) || width;
+    const pixelsPtr = view.getUint32(24, true);
+    const dirtyCount = view.getUint32(28, true);
+    const dirtyOffset = view.getUint32(32, true);
 
-  function detectPixelFormat(bpp, rb, rs, gb, gs, bb, bs, ab, ash) {
-    if (bpp === 1) return FMT_MONO1;
-    if (bpp === 2) return FMT_MONO2;
-    if (bpp === 4) return FMT_MONO4;
-
-    if (bpp === 32) {
-      if (rb === 8 && rs === 0  && gb === 8 && gs === 8 && bb === 8 && bs === 16 && ab === 8 && ash === 24) return FMT_RGBA8888_LE;
-      if (rb === 8 && rs === 16 && gb === 8 && gs === 8 && bb === 8 && bs === 0  && ab === 8 && ash === 24) return FMT_BGRA8888_LE;
-      if (rb === 8 && rs === 0  && gb === 8 && gs === 8 && bb === 8 && bs === 16 && ab === 0) return FMT_RGBX8888_LE;
-      if (rb === 8 && rs === 16 && gb === 8 && gs === 8 && bb === 8 && bs === 0  && ab === 0) return FMT_BGRX8888_LE;
+    if (width !== prevWidth || height !== prevHeight) {
+      resizeCanvas(width, height, 1);
     }
+    if (!imageData || !pixelsPtr) return;
 
-    if (bpp === 24) {
-      if (rb === 8 && rs === 0  && gb === 8 && gs === 8 && bb === 8 && bs === 16) return FMT_RGB888;
-      if (rb === 8 && rs === 16 && gb === 8 && gs === 8 && bb === 8 && bs === 0)  return FMT_BGR888;
-    }
-
-    if (bpp === 16) {
-      if (rb === 5 && rs === 11 && gb === 6 && gs === 5  && bb === 5 && bs === 0  && ab === 0) return FMT_RGB565;
-      if (rb === 5 && rs === 0  && gb === 6 && gs === 5  && bb === 5 && bs === 11 && ab === 0) return FMT_BGR565;
-      if (rb === 5 && rs === 10 && gb === 5 && gs === 5  && bb === 5 && bs === 0  && (ab === 0 || ab === 1)) return FMT_RGB555;
-      if (rb === 5 && rs === 0  && gb === 5 && gs === 5  && bb === 5 && bs === 10 && (ab === 0 || ab === 1)) return FMT_BGR555;
-      if (rb === 4 && rs === 8  && gb === 4 && gs === 4  && bb === 4 && bs === 0  && ab === 0) return FMT_RGB444;
-      if (rb === 4 && rs === 12 && gb === 4 && gs === 8  && bb === 4 && bs === 4  && ab === 4 && ash === 0) return FMT_RGBA4444;
-      if (rb === 4 && rs === 8  && gb === 4 && gs === 4  && bb === 4 && bs === 0  && ab === 4 && ash === 12) return FMT_ARGB4444;
-      if (rb === 3 && rs === 6  && gb === 3 && gs === 3  && bb === 3 && bs === 0  && ab === 0) return FMT_RGB333;
-    }
-
-    if (bpp === 8) {
-      if (rb === 3 && rs === 5 && gb === 3 && gs === 2 && bb === 2 && bs === 0 && ab === 0) return FMT_RGB332;
-      if (rb === 2 && rs === 4 && gb === 2 && gs === 2 && bb === 2 && bs === 0 && ab === 0) return FMT_RGB222;
-      if (rb === 2 && rs === 6 && gb === 2 && gs === 4 && bb === 2 && bs === 2 && ab === 2 && ash === 0) return FMT_RGBA2222;
-      if (rb === 1 && rs === 2 && gb === 1 && gs === 1 && bb === 1 && bs === 0 && ab === 0) return FMT_RGB111;
-      if (rb === 0 && gb === 0 && bb === 0) return FMT_GRAY8;
-    }
-
-    if ((bpp === 24 || bpp === 32) && rb === 6 && rs === 12 && gb === 6 && gs === 6 && bb === 6 && bs === 0 && ab === 0) {
-      return FMT_RGB666;
-    }
-
-    return FMT_GENERIC;
-  }
-
-  function unpackPixelsToImageData(w, h, bpp, vramPtr, pixels, u32, cx, cy, cw, ch, rb, rs, gb, gs, bb, bs, ab, ash, isGrayscale) {
-    const fmt = detectPixelFormat(bpp, rb, rs, gb, gs, bb, bs, ab, ash);
+    const u32 = new Uint32Array(imageData.data.buffer);
     const buf = wasmMemory.buffer;
-    const align32 = (vramPtr % 4 === 0);
-    const align16 = (vramPtr % 2 === 0);
 
-    if (fmt === FMT_RGBA8888_LE) {
-      if (align32) {
-        const v32 = new Uint32Array(buf, vramPtr, w * h);
-        for (let row = 0; row < ch; row++) {
-          const srcOff = (cy + row) * w + cx;
-          const dstOff = row * cw;
-          u32.set(v32.subarray(srcOff, srcOff + cw), dstOff);
-        }
-      } else {
-        const v8 = new Uint8Array(buf, vramPtr);
-        for (let row = 0; row < ch; row++) {
-          const dstOff = row * cw;
-          let srcIdx = ((cy + row) * w + cx) * 4;
-          for (let col = 0; col < cw; col++) {
-            u32[dstOff + col] = v8[srcIdx] | (v8[srcIdx+1] << 8) | (v8[srcIdx+2] << 16) | (v8[srcIdx+3] << 24);
-            srcIdx += 4;
-          }
+    if (format === WSURFACE_RGBA8888) {
+      const v32 = new Uint32Array(buf, pixelsPtr, stride * height);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          u32[y * width + x] = v32[y * stride + x];
         }
       }
-      return;
-    }
-
-    if (fmt === FMT_BGRA8888_LE) {
-      const v32 = align32 ? new Uint32Array(buf, vramPtr, w * h) : null;
-      const v8 = !align32 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align32 ? v32[srcRow + col] : (v8[(srcRow + col)*4] | (v8[(srcRow + col)*4+1] << 8) | (v8[(srcRow + col)*4+2] << 16) | (v8[(srcRow + col)*4+3] << 24));
-          u32[dstOff + col] = (px & 0xFF00FF00) | ((px & 0x00FF0000) >>> 16) | ((px & 0x000000FF) << 16);
+    } else if (format === WSURFACE_BGRA8888) {
+      const v32 = new Uint32Array(buf, pixelsPtr, stride * height);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const px = v32[y * stride + x];
+          u32[y * width + x] = (px & 0xFF00FF00) | ((px & 0x00FF0000) >>> 16) | ((px & 0x000000FF) << 16);
         }
       }
-      return;
-    }
-
-    if (fmt === FMT_RGBX8888_LE) {
-      const v32 = align32 ? new Uint32Array(buf, vramPtr, w * h) : null;
-      const v8 = !align32 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align32 ? v32[srcRow + col] : (v8[(srcRow + col)*4] | (v8[(srcRow + col)*4+1] << 8) | (v8[(srcRow + col)*4+2] << 16));
-          u32[dstOff + col] = 0xFF000000 | (px & 0x00FFFFFF);
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_BGRX8888_LE) {
-      const v32 = align32 ? new Uint32Array(buf, vramPtr, w * h) : null;
-      const v8 = !align32 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align32 ? v32[srcRow + col] : (v8[(srcRow + col)*4] | (v8[(srcRow + col)*4+1] << 8) | (v8[(srcRow + col)*4+2] << 16));
-          u32[dstOff + col] = 0xFF000000 | (px & 0x0000FF00) | ((px & 0x00FF0000) >>> 16) | ((px & 0x000000FF) << 16);
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB888) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        let srcIdx = ((cy + row) * w + cx) * 3;
-        for (let col = 0; col < cw; col++) {
-          u32[dstOff + col] = 0xFF000000 | (v8[srcIdx + 2] << 16) | (v8[srcIdx + 1] << 8) | v8[srcIdx];
-          srcIdx += 3;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_BGR888) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        let srcIdx = ((cy + row) * w + cx) * 3;
-        for (let col = 0; col < cw; col++) {
-          u32[dstOff + col] = 0xFF000000 | (v8[srcIdx] << 16) | (v8[srcIdx + 1] << 8) | v8[srcIdx + 2];
-          srcIdx += 3;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB565) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
+    } else if (format === WSURFACE_RGB565) {
+      const v16 = new Uint16Array(buf, pixelsPtr, stride * height);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const px = v16[y * stride + x];
           let r = (px >>> 11) & 0x1F; r = (r << 3) | (r >>> 2);
           let g = (px >>> 5)  & 0x3F; g = (g << 2) | (g >>> 4);
           let b = px & 0x1F;        b = (b << 3) | (b >>> 2);
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
+          u32[y * width + x] = 0xFF000000 | (b << 16) | (g << 8) | r;
         }
       }
-      return;
-    }
-
-    if (fmt === FMT_BGR565) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let b = (px >>> 11) & 0x1F; b = (b << 3) | (b >>> 2);
-          let g = (px >>> 5)  & 0x3F; g = (g << 2) | (g >>> 4);
-          let r = px & 0x1F;        r = (r << 3) | (r >>> 2);
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
+    } else if (format === WSURFACE_RGB888) {
+      const v8 = new Uint8Array(buf, pixelsPtr);
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const idx = (y * stride + x) * 3;
+          u32[y * width + x] = 0xFF000000 | (v8[idx + 2] << 16) | (v8[idx + 1] << 8) | v8[idx];
         }
       }
-      return;
     }
 
-    if (fmt === FMT_RGB555) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let r = (px >>> 10) & 0x1F; r = (r << 3) | (r >>> 2);
-          let g = (px >>> 5)  & 0x1F; g = (g << 3) | (g >>> 2);
-          let b = px & 0x1F;        b = (b << 3) | (b >>> 2);
-          let a = (ab === 1 && !(px & (1 << ash))) ? 0 : 255;
-          u32[dstOff + col] = (a << 24) | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_BGR555) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let b = (px >>> 10) & 0x1F; b = (b << 3) | (b >>> 2);
-          let g = (px >>> 5)  & 0x1F; g = (g << 3) | (g >>> 2);
-          let r = px & 0x1F;        r = (r << 3) | (r >>> 2);
-          let a = (ab === 1 && !(px & (1 << ash))) ? 0 : 255;
-          u32[dstOff + col] = (a << 24) | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB444) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let r = (px >>> 8) & 0x0F; r = (r << 4) | r;
-          let g = (px >>> 4) & 0x0F; g = (g << 4) | g;
-          let b = px & 0x0F;        b = (b << 4) | b;
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGBA4444) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let r = (px >>> 12) & 0x0F; r = (r << 4) | r;
-          let g = (px >>> 8)  & 0x0F; g = (g << 4) | g;
-          let b = (px >>> 4)  & 0x0F; b = (b << 4) | b;
-          let a = px & 0x0F;         a = (a << 4) | a;
-          u32[dstOff + col] = (a << 24) | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_ARGB4444) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let a = (px >>> 12) & 0x0F; a = (a << 4) | a;
-          let r = (px >>> 8)  & 0x0F; r = (r << 4) | r;
-          let g = (px >>> 4)  & 0x0F; g = (g << 4) | g;
-          let b = px & 0x0F;         b = (b << 4) | b;
-          u32[dstOff + col] = (a << 24) | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB333) {
-      const v16 = align16 ? new Uint16Array(buf, vramPtr, w * h) : null;
-      const v8 = !align16 ? new Uint8Array(buf, vramPtr) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = align16 ? v16[srcRow + col] : (v8[(srcRow + col)*2] | (v8[(srcRow + col)*2+1] << 8));
-          let r = (px >>> 6) & 7; r = (r << 5) | (r << 2) | (r >>> 1);
-          let g = (px >>> 3) & 7; g = (g << 5) | (g << 2) | (g >>> 1);
-          let b = px & 7;        b = (b << 5) | (b << 2) | (b >>> 1);
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB332) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = v8[srcRow + col];
-          let r = (px >>> 5) & 7; r = (r << 5) | (r << 2) | (r >>> 1);
-          let g = (px >>> 2) & 7; g = (g << 5) | (g << 2) | (g >>> 1);
-          let b = px & 3;        b = (b << 6) | (b << 4) | (b << 2) | b;
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB222) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = v8[srcRow + col];
-          let r = (px >>> 4) & 3; r = (r << 6) | (r << 4) | (r << 2) | r;
-          let g = (px >>> 2) & 3; g = (g << 6) | (g << 4) | (g << 2) | g;
-          let b = px & 3;        b = (b << 6) | (b << 4) | (b << 2) | b;
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGBA2222) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = v8[srcRow + col];
-          let r = (px >>> 6) & 3; r = (r << 6) | (r << 4) | (r << 2) | r;
-          let g = (px >>> 4) & 3; g = (g << 6) | (g << 4) | (g << 2) | g;
-          let b = (px >>> 2) & 3; b = (b << 6) | (b << 4) | (b << 2) | b;
-          let a = px & 3;        a = (a << 6) | (a << 4) | (a << 2) | a;
-          u32[dstOff + col] = (a << 24) | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB111) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const px = v8[srcRow + col];
-          let r = (px & 4) ? 255 : 0;
-          let g = (px & 2) ? 255 : 0;
-          let b = (px & 1) ? 255 : 0;
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_GRAY8) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const lum = v8[srcRow + col];
-          u32[dstOff + col] = 0xFF000000 | (lum << 16) | (lum << 8) | lum;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_RGB666) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      const v32 = align32 ? new Uint32Array(buf, vramPtr, w * h) : null;
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const idx = srcRow + col;
-          const px = (bpp === 32) ? (align32 ? v32[idx] : (v8[idx*4] | (v8[idx*4+1]<<8) | (v8[idx*4+2]<<16))) : (v8[idx*3] | (v8[idx*3+1]<<8) | (v8[idx*3+2]<<16));
-          let r = (px >>> 12) & 0x3F; r = (r << 2) | (r >>> 4);
-          let g = (px >>> 6)  & 0x3F; g = (g << 2) | (g >>> 4);
-          let b = px & 0x3F;         b = (b << 2) | (b >>> 4);
-          u32[dstOff + col] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_MONO1) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const idx = srcRow + col;
-          const bVal = v8[Math.floor(idx / 8)];
-          const bit = (bVal >>> (7 - (idx % 8))) & 1;
-          u32[dstOff + col] = bit ? 0xFFFFFFFF : 0xFF000000;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_MONO2) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const idx = srcRow + col;
-          const bVal = v8[Math.floor(idx / 4)];
-          let val = (bVal >>> (6 - (idx % 4) * 2)) & 0x03;
-          val = (val << 6) | (val << 4) | (val << 2) | val;
-          u32[dstOff + col] = 0xFF000000 | (val << 16) | (val << 8) | val;
-        }
-      }
-      return;
-    }
-
-    if (fmt === FMT_MONO4) {
-      const v8 = new Uint8Array(buf, vramPtr);
-      for (let row = 0; row < ch; row++) {
-        const dstOff = row * cw;
-        const srcRow = (cy + row) * w + cx;
-        for (let col = 0; col < cw; col++) {
-          const idx = srcRow + col;
-          const bVal = v8[Math.floor(idx / 2)];
-          let val = (idx % 2 === 0) ? (bVal >>> 4) : (bVal & 0x0F);
-          val = (val << 4) | val;
-          u32[dstOff + col] = 0xFF000000 | (val << 16) | (val << 8) | val;
-        }
-      }
-      return;
-    }
-
-    const mem = getMem();
-    for (let row = 0; row < ch; row++) {
-      const dstOff = row * cw;
-      for (let col = 0; col < cw; col++) {
-        const idx = (cy + row) * w + (cx + col);
-        let px = 0;
-        if (bpp === 64) px = mem.getBigUint64(vramPtr + idx * 8, true);
-        else if (bpp === 32) px = mem.getUint32(vramPtr + idx * 4, true);
-        else if (bpp === 24) {
-          px = mem.getUint8(vramPtr + idx * 3) | (mem.getUint8(vramPtr + idx * 3 + 1) << 8) | (mem.getUint8(vramPtr + idx * 3 + 2) << 16);
-        }
-        else if (bpp === 16) px = mem.getUint16(vramPtr + idx * 2, true);
-        else if (bpp === 8) px = mem.getUint8(vramPtr + idx);
-        else if (bpp === 4) {
-          const byte = mem.getUint8(vramPtr + Math.floor(idx / 2));
-          px = (idx % 2 === 0) ? (byte >> 4) : (byte & 0x0F);
-        }
-        else if (bpp === 2) {
-          const byte = mem.getUint8(vramPtr + Math.floor(idx / 4));
-          px = (byte >> (6 - (idx % 4) * 2)) & 0x03;
-        }
-        else if (bpp === 1) {
-          const byte = mem.getUint8(vramPtr + Math.floor(idx / 8));
-          px = (byte >> (7 - (idx % 8))) & 1;
-        }
-
-        let val = (bpp === 64) ? BigInt(px) : Number(px);
-
-        let r = 0, g = 0, b = 0, a = 255;
-        if (isGrayscale) {
-            let lum = 0;
-            if (ab > 0) {
-                if (bpp === 64) lum = Number((val >> BigInt(ash)) & ((1n << BigInt(ab)) - 1n));
-                else lum = (val >> ash) & ((1 << ab) - 1);
-                lum = (lum * 255 / ((1 << ab) - 1)) | 0;
-            } else {
-                lum = val ? 255 : 0;
-            }
-            r = g = b = lum;
-            a = 255;
-        } else {
-            if (bpp === 64) {
-                if (rb) r = Number((val >> BigInt(rs)) & ((1n << BigInt(rb)) - 1n)) * 255 / ((1 << rb) - 1) | 0;
-                if (gb) g = Number((val >> BigInt(gs)) & ((1n << BigInt(gb)) - 1n)) * 255 / ((1 << gb) - 1) | 0;
-                if (bb) b = Number((val >> BigInt(bs)) & ((1n << BigInt(bb)) - 1n)) * 255 / ((1 << bb) - 1) | 0;
-                if (ab) a = Number((val >> BigInt(ash)) & ((1n << BigInt(ab)) - 1n)) * 255 / ((1 << ab) - 1) | 0;
-            } else {
-                if (rb) r = ((val >> rs) & ((1 << rb) - 1)) * 255 / ((1 << rb) - 1) | 0;
-                if (gb) g = ((val >> gs) & ((1 << gb) - 1)) * 255 / ((1 << gb) - 1) | 0;
-                if (bb) b = ((val >> bs) & ((1 << bb) - 1)) * 255 / ((1 << bb) - 1) | 0;
-                if (ab) a = ((val >> ash) & ((1 << ab) - 1)) * 255 / ((1 << ab) - 1) | 0;
-            }
-        }
-        u32[dstOff + col] = (a << 24) | (b << 16) | (g << 8) | r;
-      }
-    }
-  }
-
-  function renderFullFrame(state, w, h, bpp, vramPtr) {
-    const isGrayscale = (state.rBits === 0 && state.gBits === 0 && state.bBits === 0 && state.aBits > 0) || 
-                        (state.rBits === 0 && state.gBits === 0 && state.bBits === 0 && state.aBits === 0 && bpp < 8);
-    let ab = state.aBits > 0 ? state.aBits : (bpp < 8 ? bpp : 0);
-    const u32 = new Uint32Array(imageData.data.buffer);
-    unpackPixelsToImageData(w, h, bpp, vramPtr, imageData.data, u32, 0, 0, w, h, state.rBits, state.rShift, state.gBits, state.gShift, state.bBits, state.bShift, ab, state.aShift, isGrayscale);
     ctx.putImageData(imageData, 0, 0);
-  }
-
-
-  // ── Input ──────────────────────────────────────────────────────────────
-
-  function writeInputToGlobals() {
-    if (!wasmMemory || !wasmMemory.buffer) return;
-    if (keyboardWasmPtr && keyboardWasmPtr + 256 <= wasmMemory.buffer.byteLength) {
-      new Uint8Array(wasmMemory.buffer, keyboardWasmPtr, 256).set(keysDown);
+    if (dirtyCount > 0) {
+      view.setUint32(28, 0, true);
     }
-    if (mouseWasmPtr && mouseWasmPtr + 16 <= wasmMemory.buffer.byteLength) {
-      const view = new DataView(wasmMemory.buffer, mouseWasmPtr, 16);
-      view.setInt32(0, mouseX, true);
-      view.setInt32(4, mouseY, true);
-      view.setUint32(8, mouseButtons, true);
-      view.setInt32(12, mouseWheel, true);
-    }
-    if (gamepadWasmPtr && gamepadWasmPtr + 4 <= wasmMemory.buffer.byteLength) {
-      new DataView(wasmMemory.buffer, gamepadWasmPtr, 4).setUint32(0, gamepadBtns, true);
-    }
-  }
-
-  function resetInput() {
-    mouseWheel = 0;
-  }
-
-  // ── Keyboard ───────────────────────────────────────────────────────────
-
-  function onKeyDown(e) {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    const hid = HID_SCANCODES[e.code];
-    if (hid !== undefined) {
-      keysDown[hid] = 1;
-      e.preventDefault();
-    }
-    // Map arrow keys to gamepad
-    if (e.code === 'ArrowUp')    gamepadBtns |= GP_UP;
-    if (e.code === 'ArrowDown')  gamepadBtns |= GP_DOWN;
-    if (e.code === 'ArrowLeft')  gamepadBtns |= GP_LEFT;
-    if (e.code === 'ArrowRight') gamepadBtns |= GP_RIGHT;
-    if (e.code === 'KeyZ')       gamepadBtns |= GP_A;
-    if (e.code === 'KeyX')       gamepadBtns |= GP_B;
-    if (e.code === 'Enter')      gamepadBtns |= GP_START;
-    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') gamepadBtns |= GP_SEL;
-  }
-
-  function onKeyUp(e) {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-    const hid = HID_SCANCODES[e.code];
-    if (hid !== undefined) {
-      keysDown[hid] = 0;
-      e.preventDefault();
-    }
-    if (e.code === 'ArrowUp')    gamepadBtns &= ~GP_UP;
-    if (e.code === 'ArrowDown')  gamepadBtns &= ~GP_DOWN;
-    if (e.code === 'ArrowLeft')  gamepadBtns &= ~GP_LEFT;
-    if (e.code === 'ArrowRight') gamepadBtns &= ~GP_RIGHT;
-    if (e.code === 'KeyZ')       gamepadBtns &= ~GP_A;
-    if (e.code === 'KeyX')       gamepadBtns &= ~GP_B;
-    if (e.code === 'Enter')      gamepadBtns &= ~GP_START;
-    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') gamepadBtns &= ~GP_SEL;
-  }
-
-  // ── Mouse ──────────────────────────────────────────────────────────────
-
-  function onMouseMove(e) {
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    mouseX = ((e.clientX - rect.left) * scaleX) | 0;
-    mouseY = ((e.clientY - rect.top) * scaleY) | 0;
-  }
-
-  function onMouseDown(e) {
-    if (e.button === 0) mouseButtons |= 1; // left
-    if (e.button === 2) mouseButtons |= 2; // right
-    e.preventDefault();
-  }
-
-  function onMouseUp(e) {
-    if (e.button === 0) mouseButtons &= ~1;
-    if (e.button === 2) mouseButtons &= ~2;
-    e.preventDefault();
-  }
-
-  function onWheel(e) {
-    // SDL: wheel.y > 0 = scroll UP. Browser: deltaY > 0 = scroll DOWN.
-    // Invert to match SDL convention. Pass through raw magnitude.
-    mouseWheel -= Math.sign(e.deltaY);
-    e.preventDefault();
-  }
-
-  function onContextMenu(e) { e.preventDefault(); }
-
-  // ── Gamepad Buttons ────────────────────────────────────────────────────
-
-  function setupGamepadButtons() {
-    const buttons = document.querySelectorAll('[data-btn]');
-    buttons.forEach(function (btn) {
-      const name = btn.getAttribute('data-btn');
-      const bit = GP_BTN_MAP[name];
-      if (bit === undefined) return;
-
-      btn.addEventListener('mousedown', function (e) {
-        gamepadBtns |= bit;
-        e.preventDefault();
-      });
-      btn.addEventListener('mouseup', function (e) {
-        gamepadBtns &= ~bit;
-        e.preventDefault();
-      });
-      btn.addEventListener('mouseleave', function () {
-        gamepadBtns &= ~bit;
-      });
-      // Touch support
-      btn.addEventListener('touchstart', function (e) {
-        gamepadBtns |= bit;
-        e.preventDefault();
-      });
-      btn.addEventListener('touchend', function (e) {
-        gamepadBtns &= ~bit;
-        e.preventDefault();
-      });
-    });
   }
 
   // ── Main Loop ──────────────────────────────────────────────────────────
@@ -838,68 +279,72 @@
   function frame(now) {
     if (!running) return;
 
-    // Respect target_fps: read it from state if available
-    const targetFps = statePtr ? getMem().getUint32(statePtr + 424, true) : 0;
-    if (targetFps > 0) {
-      const interval = 1000 / targetFps;
-      if (now - lastFrameTime < interval - 0.5) {
-        requestAnimationFrame(frame);
-        return;
-      }
-    }
+    const dt = (now - lastFrameTime) / 1000;
     lastFrameTime = now;
 
-    webDirtyRects.length = 0;
-    webFullRedraw = false;
+    // 1. Update Extensions Input & Clock
+    if (clockPtr && clockPtr + 32 <= wasmMemory.buffer.byteLength) {
+      const view = new DataView(wasmMemory.buffer, clockPtr, 32);
+      view.setBigUint64(8, BigInt(Math.floor(now - startTime)), true);
+      view.setFloat32(24, dt, true);
+    }
+    if (keyboardPtr && keyboardPtr + 264 <= wasmMemory.buffer.byteLength) {
+      new Uint8Array(wasmMemory.buffer, keyboardPtr + 8, 256).set(keysDown);
+    }
+    if (mousePtr && mousePtr + 28 <= wasmMemory.buffer.byteLength) {
+      const view = new DataView(wasmMemory.buffer, mousePtr, 28);
+      view.setInt32(8, mouseX, true);
+      view.setInt32(12, mouseY, true);
+      view.setUint32(16, mouseButtons, true);
+      view.setInt32(20, mouseWheelX, true);
+      view.setInt32(24, mouseWheelY, true);
+    }
+    if (gamepadPtr && gamepadPtr + 28 <= wasmMemory.buffer.byteLength) {
+      const view = new DataView(wasmMemory.buffer, gamepadPtr, 28);
+      view.setUint32(8, gamepadBtns, true);
+    }
 
-    // 1. Write input to globals
-    writeInputToGlobals();
-
-    // 2. Call wupdate(); exit if 0
-    let ret;
+    // 2. Call wupdate()
+    let status = WUPDATE_OK;
     try {
-      ret = wasmExports.wupdate();
+      status = wasmExports.wupdate();
     } catch (err) {
       console.error('wupdate() threw:', err);
       running = false;
       return;
     }
-    if (ret === 0) {
+
+    if (status === WUPDATE_EXIT) {
       running = false;
-      console.log('ROM exited (wupdate returned 0)');
+      console.log('ROM exited cleanly (WUPDATE_EXIT)');
       return;
     }
-    statePtr = ret;
-
-    // 3. Read globals and auto-detect config changes
-    const g = readGlobals();
-    const w = g.w || DEFAULT_WIDTH;
-    const h = g.h || DEFAULT_HEIGHT;
-    const bpp = g.bpp || DEFAULT_BPP;
-    const scale = g.scale || DEFAULT_SCALE;
-
-    if (w !== prevWidth || h !== prevHeight || bpp !== prevBpp || scale !== prevScale) {
-      resizeCanvas(w, h, scale);
+    if (status < 0) {
+      running = false;
+      console.error('ROM returned error (WUPDATE_ERROR):', status);
+      return;
     }
 
-    // 4. Render frame
-    renderFullFrame(g, w, h, bpp, statePtr + g.vramOffset);
+    // 3. Render Surface
+    if (surfacePtr) {
+      renderSurface(surfacePtr);
+    }
 
-    // 5. Reset mouse wheel
-    resetInput();
+    // 4. Reset relative mouse wheel deltas
+    mouseWheelX = 0;
+    mouseWheelY = 0;
 
     requestAnimationFrame(frame);
   }
 
   // ── WASM Loading ───────────────────────────────────────────────────────
 
-  // Simple TAR file extraction
   function extractFromTar(buf, filename) {
     const dv = new DataView(buf);
     let offset = 0;
     let lastFound = null;
     while (offset + 512 <= buf.byteLength) {
-      if (dv.getUint8(offset) === 0) break; // end of tar
+      if (dv.getUint8(offset) === 0) break;
       let name = '';
       for (let i = 0; i < 100; i++) {
         let b = dv.getUint8(offset + i);
@@ -909,9 +354,7 @@
       let sizeStr = '';
       for (let i = 124; i < 135; i++) {
         let b = dv.getUint8(offset + i);
-        if (b >= 48 && b <= 55) { // '0' to '7'
-           sizeStr += String.fromCharCode(b);
-        }
+        if (b >= 48 && b <= 55) sizeStr += String.fromCharCode(b);
       }
       let size = parseInt(sizeStr || '0', 8);
       if (name === filename) {
@@ -924,77 +367,113 @@
   }
 
   function loadRomFromBuffer(buf) {
-    keyboardWasmPtr = 0;
-    mouseWasmPtr = 0;
-    gamepadWasmPtr = 0;
-    statePtr = 0;
+    surfacePtr = 0;
+    clockPtr = 0;
+    keyboardPtr = 0;
+    mousePtr = 0;
+    gamepadPtr = 0;
+    audioPtr = 0;
+    arenaOffset = 0;
+
     let wasmBuffer = buf;
-    tarBuffer = null;
-    
-    // Check if TAR by trying to extract main.wasm
     const mainWasm = extractFromTar(buf, 'main.wasm');
     if (mainWasm) {
-      tarBuffer = buf;
       wasmBuffer = mainWasm.buffer.slice(mainWasm.byteOffset, mainWasm.byteOffset + mainWasm.byteLength);
-    }
-
-    let windowTitle = 'Wagnostic';
-    let lastTitleWasmPtr = 0;
-
-    function readWasmString(ptr) {
-      if (!ptr || !wasmMemory) return '';
-      const bytes = new Uint8Array(wasmMemory.buffer, ptr);
-      let len = 0;
-      while (len < 1024 && bytes[len] !== 0) len++;
-      return new TextDecoder().decode(bytes.subarray(0, len));
-    }
-
-    function writeWasmString(ptr, str) {
-      if (!ptr || !wasmMemory) return;
-      const encoder = new TextEncoder();
-      const encoded = encoder.encode(str);
-      const bytes = new Uint8Array(wasmMemory.buffer, ptr, encoded.length + 1);
-      bytes.set(encoded);
-      bytes[encoded.length] = 0;
     }
 
     const wasmImports = {
       env: {
-        wextension: function(namePtr, dataPtr) {
+        wextension: function(namePtr, version) {
           const name = readWasmString(namePtr);
-          if (name === 'title.set') {
-            if (dataPtr) {
-              windowTitle = readWasmString(dataPtr);
-              lastTitleWasmPtr = dataPtr;
-              document.title = windowTitle;
-              return dataPtr;
+          if (name === 'std:surface' && version === 1) {
+            if (!surfacePtr) {
+              surfacePtr = hostAlloc(36, 4);
+              defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
+              defaultDirtyPtr = hostAlloc(32 * 8, 4);
+
+              const view = new DataView(wasmMemory.buffer, surfacePtr, 36);
+              view.setUint32(0, 1, true);               // version
+              view.setUint32(4, 36, true);              // size
+              view.setUint32(8, 320, true);             // width
+              view.setUint32(12, 240, true);            // height
+              view.setUint32(16, WSURFACE_RGBA8888, true);// format
+              view.setUint32(20, 320, true);            // stride
+              view.setUint32(24, defaultFbPtr, true);   // pixels
+              view.setUint32(28, 0, true);              // dirty_count
+              view.setUint32(32, defaultDirtyPtr, true);// dirty_offset
             }
-            return 0;
+            return surfacePtr;
           }
-          if (name === 'std:keyboard') {
-            if (dataPtr) {
-              keyboardWasmPtr = dataPtr;
-            } else if (!keyboardWasmPtr && statePtr) {
-              keyboardWasmPtr = statePtr + 48;
+
+          if (name === 'std:clock' && version === 1) {
+            if (!clockPtr) {
+              clockPtr = hostAlloc(32, 8);
+              const view = new DataView(wasmMemory.buffer, clockPtr, 32);
+              view.setUint32(0, 1, true);
+              view.setUint32(4, 32, true);
+              view.setBigUint64(8, 0n, true);
+              view.setBigUint64(16, 1000n, true);
+              view.setFloat32(24, 0.0166667, true);
             }
-            return keyboardWasmPtr;
+            return clockPtr;
           }
-          if (name === 'std:mouse') {
-            if (dataPtr) {
-              mouseWasmPtr = dataPtr;
-            } else if (!mouseWasmPtr && statePtr) {
-              mouseWasmPtr = statePtr + 48 + 256;
+
+          if (name === 'std:keyboard' && version === 1) {
+            if (!keyboardPtr) {
+              keyboardPtr = hostAlloc(264, 4);
+              const view = new DataView(wasmMemory.buffer, keyboardPtr, 264);
+              view.setUint32(0, 1, true);
+              view.setUint32(4, 264, true);
+              new Uint8Array(wasmMemory.buffer, keyboardPtr + 8, 256).fill(0);
             }
-            return mouseWasmPtr;
+            return keyboardPtr;
           }
-          if (name === 'std:gamepad') {
-            if (dataPtr) {
-              gamepadWasmPtr = dataPtr;
-            } else if (!gamepadWasmPtr && statePtr) {
-              gamepadWasmPtr = statePtr + 44 + 256 + 16;
+
+          if (name === 'std:mouse' && version === 1) {
+            if (!mousePtr) {
+              mousePtr = hostAlloc(28, 4);
+              const view = new DataView(wasmMemory.buffer, mousePtr, 28);
+              view.setUint32(0, 1, true);
+              view.setUint32(4, 28, true);
+              view.setInt32(8, 0, true);
+              view.setInt32(12, 0, true);
+              view.setUint32(16, 0, true);
+              view.setInt32(20, 0, true);
+              view.setInt32(24, 0, true);
             }
-            return gamepadWasmPtr;
+            return mousePtr;
           }
+
+          if (name === 'std:gamepad' && version === 1) {
+            if (!gamepadPtr) {
+              gamepadPtr = hostAlloc(28, 4);
+              const view = new DataView(wasmMemory.buffer, gamepadPtr, 28);
+              view.setUint32(0, 1, true);
+              view.setUint32(4, 28, true);
+              view.setUint32(8, 0, true);
+            }
+            return gamepadPtr;
+          }
+
+          if (name === 'std:audio' && version === 1) {
+            initAudio();
+            if (!audioPtr) {
+              audioPtr = hostAlloc(36, 4);
+              defaultAudioPtr = hostAlloc(4096 * 2 * 4, 4);
+              const view = new DataView(wasmMemory.buffer, audioPtr, 36);
+              view.setUint32(0, 1, true);
+              view.setUint32(4, 36, true);
+              view.setUint32(8, 44100, true);
+              view.setUint32(12, 2, true);
+              view.setUint32(16, 1, true); // F32
+              view.setUint32(20, defaultAudioPtr, true);
+              view.setUint32(24, 4096, true);
+              view.setUint32(28, 0, true);
+              view.setUint32(32, 0, true);
+            }
+            return audioPtr;
+          }
+
           return 0;
         }
       }
@@ -1014,24 +493,17 @@
         console.error('ROM does not export wupdate() function');
         return;
       }
-      
-      // Get initial state pointer
-      statePtr = wasmExports.wupdate();
-      if (!statePtr) {
-        console.error('Initial wupdate() returned 0');
-        return;
-      }
 
-      const g = readGlobals();
-      resizeCanvas(g.w || DEFAULT_WIDTH, g.h || DEFAULT_HEIGHT, g.scale || DEFAULT_SCALE);
+      resizeCanvas(320, 240, 1);
 
       if (emptyState) emptyState.style.display = 'none';
-      canvas.style.display = 'block';
+      if (canvas) canvas.style.display = 'block';
 
-      console.log('ROM loaded.');
-      
+      console.log('Wagnostic 2.0 ROM loaded.');
+
       running = true;
-      lastFrameTime = 0;
+      startTime = performance.now();
+      lastFrameTime = performance.now();
       requestAnimationFrame(frame);
     }).catch(function (err) {
       console.error('Failed to load ROM:', err);
@@ -1040,12 +512,11 @@
 
   function loadRom(wasmUrl) {
     running = false;
-    startTime = performance.now();
-
     keysDown.fill(0);
     gamepadBtns = 0;
     mouseButtons = 0;
-    mouseWheel = 0;
+    mouseWheelX = 0;
+    mouseWheelY = 0;
 
     fetch(wasmUrl).then(function (r) { return r.arrayBuffer(); })
       .then(loadRomFromBuffer).catch(function (err) {
@@ -1055,64 +526,85 @@
 
   // ── Event Listeners ────────────────────────────────────────────────────
 
-  // File input
-  fileInput.addEventListener('change', function (e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    
-    const reader = new FileReader();
-    reader.onload = function(evt) {
-      loadRomFromBuffer(evt.target.result);
-    };
-    reader.readAsArrayBuffer(file);
+  if (fileInput) {
+    fileInput.addEventListener('change', function (e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        loadRomFromBuffer(evt.target.result);
+      };
+      reader.readAsArrayBuffer(file);
+    });
+  }
+
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    resumeAudio();
+    const hid = HID_SCANCODES[e.code];
+    if (hid !== undefined) {
+      keysDown[hid] = 1;
+      e.preventDefault();
+    }
+    if (e.code === 'ArrowUp')    gamepadBtns |= GP_UP;
+    if (e.code === 'ArrowDown')  gamepadBtns |= GP_DOWN;
+    if (e.code === 'ArrowLeft')  gamepadBtns |= GP_LEFT;
+    if (e.code === 'ArrowRight') gamepadBtns |= GP_RIGHT;
+    if (e.code === 'KeyZ')       gamepadBtns |= GP_A;
+    if (e.code === 'KeyX')       gamepadBtns |= GP_B;
+    if (e.code === 'Enter')      gamepadBtns |= GP_START;
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') gamepadBtns |= GP_SEL;
   });
 
-  // Keyboard
-  document.addEventListener('keydown', onKeyDown);
-  document.addEventListener('keyup', onKeyUp);
+  document.addEventListener('keyup', function (e) {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    const hid = HID_SCANCODES[e.code];
+    if (hid !== undefined) {
+      keysDown[hid] = 0;
+      e.preventDefault();
+    }
+    if (e.code === 'ArrowUp')    gamepadBtns &= ~GP_UP;
+    if (e.code === 'ArrowDown')  gamepadBtns &= ~GP_DOWN;
+    if (e.code === 'ArrowLeft')  gamepadBtns &= ~GP_LEFT;
+    if (e.code === 'ArrowRight') gamepadBtns &= ~GP_RIGHT;
+    if (e.code === 'KeyZ')       gamepadBtns &= ~GP_A;
+    if (e.code === 'KeyX')       gamepadBtns &= ~GP_B;
+    if (e.code === 'Enter')      gamepadBtns &= ~GP_START;
+    if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') gamepadBtns &= ~GP_SEL;
+  });
 
-  // Mouse on canvas
-  canvas.addEventListener('mousemove', onMouseMove);
-  canvas.addEventListener('mousedown', onMouseDown);
-  canvas.addEventListener('mouseup', onMouseUp);
-  canvas.addEventListener('wheel', onWheel, { passive: false });
-  canvas.addEventListener('contextmenu', onContextMenu);
+  if (canvas) {
+    canvas.addEventListener('mousemove', function (e) {
+      const rect = canvas.getBoundingClientRect();
+      const scaleX = canvas.width / rect.width;
+      const scaleY = canvas.height / rect.height;
+      mouseX = ((e.clientX - rect.left) * scaleX) | 0;
+      mouseY = ((e.clientY - rect.top) * scaleY) | 0;
+    });
 
-  // Touch support on canvas for mouse simulation
-  canvas.addEventListener('touchstart', function (e) {
-    resumeAudio();
-    const touch = e.touches[0];
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    mouseX = ((touch.clientX - rect.left) * scaleX) | 0;
-    mouseY = ((touch.clientY - rect.top) * scaleY) | 0;
-    mouseButtons |= 1;
-    e.preventDefault();
-  }, { passive: false });
+    canvas.addEventListener('mousedown', function (e) {
+      resumeAudio();
+      if (e.button === 0) mouseButtons |= 1;
+      if (e.button === 2) mouseButtons |= 2;
+      if (e.button === 1) mouseButtons |= 4;
+      e.preventDefault();
+    });
 
-  canvas.addEventListener('touchmove', function (e) {
-    const touch = e.touches[0];
-    const rect = canvas.getBoundingClientRect();
-    const scaleX = canvas.width / rect.width;
-    const scaleY = canvas.height / rect.height;
-    mouseX = ((touch.clientX - rect.left) * scaleX) | 0;
-    mouseY = ((touch.clientY - rect.top) * scaleY) | 0;
-    e.preventDefault();
-  }, { passive: false });
+    canvas.addEventListener('mouseup', function (e) {
+      if (e.button === 0) mouseButtons &= ~1;
+      if (e.button === 2) mouseButtons &= ~2;
+      if (e.button === 1) mouseButtons &= ~4;
+      e.preventDefault();
+    });
 
-  canvas.addEventListener('touchend', function (e) {
-    mouseButtons &= ~1;
-    e.preventDefault();
-  }, { passive: false });
+    canvas.addEventListener('wheel', function (e) {
+      mouseWheelX += Math.sign(e.deltaX);
+      mouseWheelY -= Math.sign(e.deltaY);
+      e.preventDefault();
+    }, { passive: false });
 
-  // Gamepad virtual buttons
-  setupGamepadButtons();
-
-  // Initial canvas style
-  canvas.style.imageRendering = 'pixelated';
-
-  console.log('Wagnostic Web Runner ready. Load a .wasm ROM to begin.');
+    canvas.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  }
 
   window.wagnosticLoadRomFromBuffer = loadRomFromBuffer;
 

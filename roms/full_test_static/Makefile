@@ -1,6 +1,6 @@
 CLANG ?= clang
-CFLAGS = --target=wasm32 -nostdlib -fno-delete-null-pointer-checks -O3 -w
-LDFLAGS = -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined
+CFLAGS = --target=wasm32 -nostdlib -fno-delete-null-pointer-checks -O3 -w -I../../include 
+LDFLAGS = -Wl,--no-entry -Wl,--export-all -Wl,--allow-undefined -Wl,--initial-memory=4194304
 
 TARGET = ../$(shell basename $(CURDIR)).wasm
 

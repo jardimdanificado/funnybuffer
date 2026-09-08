@@ -2,35 +2,16 @@
 #include <string.h>
 #include <stdlib.h>
 
-extern void* wextension(const char* name, void* ptr);
-
-/* --- Wagnostic ABI --- */
-typedef struct { int x, y, w, h; } Rect;
-
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} WagnosticState;
-
-typedef struct {
-    int32_t x, y;
-    uint32_t buttons;
-    int32_t wheel;
-} MouseState;
-
-_Static_assert(sizeof(WagnosticState) == 44, "Size mismatch");
+#include "wagnostic.h"
+#include "surface.h"
+#include "mouse.h"
 
 #define WIDTH 320
 #define HEIGHT 240
 
-static struct {
-    WagnosticState s;
-    uint8_t vram[WIDTH * HEIGHT * 4];
-} rom = {0};
+static wsurface_t *surface;
+static wmouse_t   *mouse;
+static uint8_t vram[WIDTH * HEIGHT * 4];
 
 /* --- MicroQuickJS --- */
 #include "mquickjs.h"
@@ -55,8 +36,6 @@ static uint8_t js_heap[512 * 1024];
 static JSContext *ctx = NULL;
 static JSValue js_frame_func = JS_UNDEFINED;
 static JSValue js_wagnostic_obj = JS_UNDEFINED;
-static MouseState mouse_buf;
-static MouseState* mouse = NULL;
 static uint32_t ticks = 0;
 
 /* Native function: set_pixel(x, y, r, g, b) */
@@ -71,8 +50,7 @@ JSValue js_set_pixel(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv)
     JS_ToInt32(ctx, &b, argv[4]);
     
     if (x >= 0 && x < WIDTH && y >= 0 && y < HEIGHT) {
-        uint32_t *vram32 = (uint32_t*)rom.vram;
-        /* Assuming RGBA8888 Host format (A=24, B=16, G=8, R=0) */
+        uint32_t *vram32 = (uint32_t*)vram;
         uint32_t color = (255 << 24) | ((b & 0xFF) << 16) | ((g & 0xFF) << 8) | (r & 0xFF);
         vram32[y * WIDTH + x] = color;
     }
@@ -81,22 +59,20 @@ JSValue js_set_pixel(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv)
 }
 
 /* Wagnostic ABI Entry */
-int wupdate() {
+int32_t wupdate(void) {
     ticks++;
     // Frame 0 Initialization
-    if (rom.s.width == 0) {
-        rom.s.width = WIDTH;
-        rom.s.height = HEIGHT;
-        
-        // Host format: RGBA8888
-        rom.s.r_bits = 8; rom.s.r_shift = 0;
-        rom.s.g_bits = 8; rom.s.g_shift = 8;
-        rom.s.b_bits = 8; rom.s.b_shift = 16;
-        rom.s.a_bits = 8; rom.s.a_shift = 24;
-        
-        rom.s.vram_offset = sizeof(WagnosticState);
+    if (!surface) {
+        surface = (wsurface_t*)wextension("std:surface", 1);
+        mouse   = (wmouse_t*)wextension("std:mouse", 1);
 
-        mouse = (MouseState*)wextension("std:mouse", &mouse_buf);
+        if (surface) {
+            surface->width = WIDTH;
+            surface->height = HEIGHT;
+            surface->stride = WIDTH;
+            surface->format = WSURFACE_RGBA8888;
+            surface->pixels = (uint32_t)vram;
+        }
 
         // Init JS
         ctx = JS_NewContext(js_heap, sizeof(js_heap), &js_stdlib);
@@ -111,7 +87,6 @@ int wupdate() {
             JS_SetPropertyStr(ctx, js_wagnostic_obj, "mouse_y", JS_NewInt32(ctx, 0));
             JS_SetPropertyStr(ctx, global, "wagnostic", js_wagnostic_obj);
             
-            // JavaScript code embedded directly as a string (Exact original demo)
             const char *script_code = 
                 "var t = 0;\n"
                 "function frame() {\n"
@@ -159,12 +134,11 @@ int wupdate() {
                 JS_PushArg(ctx, JS_NULL);
                 JSValue res = JS_Call(ctx, 0);
                 if (JS_IsException(res)) {
-                    // Clear exception state so runtime doesn't lock up
                     JS_GetException(ctx);
                 }
             }
         }
     }
     
-    return (int)&rom.s;
+    return WUPDATE_OK;
 }

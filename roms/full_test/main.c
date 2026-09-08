@@ -1,70 +1,40 @@
-typedef struct { int x, y, w, h; } Rect;
-// full_test — Comprehensive test of ALL ABI features
+// full_test — Comprehensive test of Wagnostic 2.0 features
 
-#include <stdint.h>
-#include <stddef.h>
+#include "wagnostic.h"
+#include "surface.h"
+#include "clock.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "gamepad.h"
 
-extern void* wextension(const char* name, void* ptr);
+static wsurface_t  *surface;
+static wclock_t    *clock_ext;
+static wkeyboard_t *keyboard;
+static wmouse_t    *mouse;
+static wgamepad_t  *gamepad;
 
-/* SET_BPP(s, bpp) — sets channel bits/shifts for standard pixel formats.
- * The host derives BPP from these fields; there is no separate bpp field. */
-#define SET_BPP(s, bpp_val) do { \
-    if ((bpp_val) == 32) { \
-        (s)->r_bits=8;(s)->r_shift=0; \
-        (s)->g_bits=8;(s)->g_shift=8; \
-        (s)->b_bits=8;(s)->b_shift=16; \
-        (s)->a_bits=8;(s)->a_shift=24; \
-    } else if ((bpp_val) == 16) { \
-        (s)->r_bits=5;(s)->r_shift=11; \
-        (s)->g_bits=6;(s)->g_shift=5; \
-        (s)->b_bits=5;(s)->b_shift=0; \
-        (s)->a_bits=0;(s)->a_shift=0; \
-    } else if ((bpp_val) == 8) { \
-        (s)->r_bits=3;(s)->r_shift=5; \
-        (s)->g_bits=3;(s)->g_shift=2; \
-        (s)->b_bits=2;(s)->b_shift=0; \
-        (s)->a_bits=0;(s)->a_shift=0; \
-    } \
-} while(0)
-
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} State;
-
-typedef struct {
-    int32_t x, y;
-    uint32_t buttons;
-    int32_t wheel;
-} MouseState;
-
-static struct {
-    State s;
-    uint8_t vram[640 * 480 * 4];
-} rom;
-
-static int current_bpp = 16;
+static int current_fmt = WSURFACE_RGB565;
 static int frame_count = 0;
 static int resize_state = 0;
 static int initialized = 0;
-static uint8_t keys_buf[256];
-static MouseState mouse_buf;
-static uint8_t* keys = NULL;
-static MouseState* mouse = NULL;
 
 static void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
-    if (x < 0 || x >= (int)rom.s.width || y < 0 || y >= (int)rom.s.height) return;
-    int idx = y * (int)rom.s.width + x;
-    if (current_bpp == 8) {
-        rom.vram[idx] = ((r & 0xE0) | ((g & 0xE0) >> 3) | ((b & 0xC0) >> 6));
-    } else if (current_bpp == 16) {
-        ((uint16_t*)rom.vram)[idx] = (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    if (!surface || !surface->pixels) return;
+    int w = (int)surface->width;
+    int h = (int)surface->height;
+    int stride = (int)(surface->stride ? surface->stride : surface->width);
+    if (x < 0 || x >= w || y < 0 || y >= h) return;
+
+    int idx = y * stride + x;
+    if (surface->format == WSURFACE_RGB565) {
+        ((uint16_t*)surface->pixels)[idx] = (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+    } else if (surface->format == WSURFACE_RGB888) {
+        uint8_t* p = (uint8_t*)surface->pixels + idx * 3;
+        p[0] = r; p[1] = g; p[2] = b;
+    } else if (surface->format == WSURFACE_BGRA8888) {
+        ((uint32_t*)surface->pixels)[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
     } else {
-        ((uint32_t*)rom.vram)[idx] = 0xFF000000 | (b << 16) | (g << 8) | r;
+        ((uint32_t*)surface->pixels)[idx] = 0xFF000000 | (b << 16) | (g << 8) | r;
     }
 }
 
@@ -75,7 +45,8 @@ static void fill_rect(int rx, int ry, int rw, int rh, uint8_t r, uint8_t g, uint
 }
 
 static void clear(uint8_t r, uint8_t g, uint8_t b) {
-    fill_rect(0, 0, (int)rom.s.width, (int)rom.s.height, r, g, b);
+    if (!surface) return;
+    fill_rect(0, 0, (int)surface->width, (int)surface->height, r, g, b);
 }
 
 static const uint8_t font5x7[10][7] = {
@@ -116,7 +87,7 @@ static void draw_keyboard(int ox, int oy, int qw, int qh) {
         if (key_idx >= 256) break;
         int cx = i % cols, cy = i / cols;
         int px = ox + 4 + cx * cell_w, py = oy + 12 + cy * cell_h;
-        int is_pressed = keys && keys[key_idx];
+        int is_pressed = keyboard && keyboard->keys[key_idx];
         uint8_t cr = is_pressed ? 0 : 50;
         uint8_t cg = is_pressed ? 200 : 50;
         uint8_t cb = is_pressed ? 80 : 60;
@@ -143,73 +114,82 @@ static void draw_dirty_anim(int ox, int oy, int qw, int qh) {
 }
 
 static void draw_mouse(int ox, int oy, int qw, int qh) {
+    if (!surface) return;
     int mx = mouse ? mouse->x : 0;
     int my = mouse ? mouse->y : 0;
     uint32_t mbtns = mouse ? mouse->buttons : 0;
-    int mwheel = mouse ? mouse->wheel : 0;
+    int mwheel = mouse ? mouse->wheel_y : 0;
 
-    int cx = ox + (mx * qw) / (int)rom.s.width;
-    int cy = oy + (my * qh) / (int)rom.s.height;
+    int cx = ox + (mx * qw) / (int)surface->width;
+    int cy = oy + (my * qh) / (int)surface->height;
 
     for (int x = ox; x < ox + qw; x++) set_pixel(x, cy, 60, 60, 80);
     for (int y = oy; y < oy + qh; y++) set_pixel(cx, y, 60, 60, 80);
 
     fill_rect(cx - 2, cy - 2, 5, 5, 255, 255, 255);
 
-    uint8_t lb = (mbtns & 1) ? 255 : 80;
+    uint8_t lb = (mbtns & WMOUSE_BTN_LEFT) ? 255 : 80;
     fill_rect(ox + 2, oy + qh - 12, 15, 10, lb, 30, 30);
 
-    uint8_t rb = (mbtns & 2) ? 100 : 80;
+    uint8_t rb = (mbtns & WMOUSE_BTN_RIGHT) ? 100 : 80;
     fill_rect(ox + 22, oy + qh - 12, 15, 10, 30, 30, rb);
 
     draw_number(ox + 45, oy + qh - 12, mwheel, 255, 255, 0);
 }
 
-int wupdate() {
+int32_t wupdate(void) {
     if (!initialized) {
-        rom.s.width = 320;
-        rom.s.height = 240;
-        rom.s.vram_offset = (uint32_t)((uint8_t*)rom.vram - (uint8_t*)&rom.s);
+        surface   = (wsurface_t*)wextension("std:surface", 1);
+        clock_ext = (wclock_t*)wextension("std:clock", 1);
+        keyboard  = (wkeyboard_t*)wextension("std:keyboard", 1);
+        mouse     = (wmouse_t*)wextension("std:mouse", 1);
+        gamepad   = (wgamepad_t*)wextension("std:gamepad", 1);
 
-        keys = (uint8_t*)wextension("std:keyboard", keys_buf);
-        mouse = (MouseState*)wextension("std:mouse", &mouse_buf);
+        if (surface) {
+            surface->width = 320;
+            surface->height = 240;
+            surface->stride = 320;
+            surface->format = WSURFACE_RGB565;
+        }
 
         initialized = 1;
     }
+
+    if (!surface || !surface->pixels) return WUPDATE_ERROR;
 
     frame_count++;
 
     static int sp_was = 0, r_was = 0, k1_was = 0, k2_was = 0, k3_was = 0;
 
-    int key_sp = keys ? keys[44] : 0;
+    int key_sp = keyboard ? keyboard->keys[44] : 0;
     if (key_sp && !sp_was) {
-        if (current_bpp == 8) current_bpp = 16;
-        else if (current_bpp == 16) current_bpp = 32;
-        else current_bpp = 8;
+        if (surface->format == WSURFACE_RGB565) surface->format = WSURFACE_RGB888;
+        else if (surface->format == WSURFACE_RGB888) surface->format = WSURFACE_RGBA8888;
+        else surface->format = WSURFACE_RGB565;
     }
     sp_was = key_sp;
 
-    int key_r = keys ? keys[21] : 0;
+    int key_r = keyboard ? keyboard->keys[21] : 0;
     if (key_r && !r_was) {
         resize_state = (resize_state + 1) % 3;
-        if (resize_state == 0) { rom.s.width = 320; rom.s.height = 240; }
-        else if (resize_state == 1) { rom.s.width = 640; rom.s.height = 480; }
-        else { rom.s.width = 160; rom.s.height = 120; }
+        if (resize_state == 0) { surface->width = 320; surface->height = 240; surface->stride = 320; }
+        else if (resize_state == 1) { surface->width = 640; surface->height = 480; surface->stride = 640; }
+        else { surface->width = 160; surface->height = 120; surface->stride = 160; }
     }
     r_was = key_r;
 
-    int k1 = keys ? keys[30] : 0;
-    int k2 = keys ? keys[31] : 0;
-    int k3 = keys ? keys[32] : 0;
+    int k1 = keyboard ? keyboard->keys[30] : 0;
+    int k2 = keyboard ? keyboard->keys[31] : 0;
+    int k3 = keyboard ? keyboard->keys[32] : 0;
 
-    if (k1 && !k1_was) { current_bpp = 8; }
-    if (k2 && !k2_was) { current_bpp = 16; }
-    if (k3 && !k3_was) { current_bpp = 32; }
+    if (k1 && !k1_was) surface->format = WSURFACE_RGB565;
+    if (k2 && !k2_was) surface->format = WSURFACE_RGB888;
+    if (k3 && !k3_was) surface->format = WSURFACE_RGBA8888;
     k1_was = k1; k2_was = k2; k3_was = k3;
 
-    if (keys && keys[41]) return 0;
+    if (keyboard && keyboard->keys[41]) return WUPDATE_EXIT;
 
-    int W = (int)rom.s.width, H = (int)rom.s.height;
+    int W = (int)surface->width, H = (int)surface->height;
     clear(15, 15, 20);
 
     fill_rect(W/2, 0, 1, H, 60, 60, 80);
@@ -219,6 +199,5 @@ int wupdate() {
     draw_dirty_anim(W/2 + 1, 0, W/2 - 1, H/2);
     draw_mouse(0, H/2 + 1, W/2, H/2 - 1);
 
-    SET_BPP(&rom.s, current_bpp);
-    return (int)&rom.s;
+    return WUPDATE_OK;
 }

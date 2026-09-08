@@ -26,143 +26,158 @@ struct WagnosticContext {
 
     uint8_t* mem;
     uint32_t mem_len;
-    uint32_t state_ptr;
+
+    uint32_t surface_ptr;
+    uint32_t clock_ptr;
+    uint32_t keyboard_ptr;
+    uint32_t mouse_ptr;
+    uint32_t gamepad_ptr;
+    uint32_t audio_ptr;
+
+    uint32_t default_fb_ptr;
+    uint32_t default_dirty_ptr;
+    uint32_t default_audio_ptr;
+    uint32_t arena_offset;
 
     uint8_t keys[256];
     int32_t mouse_x;
     int32_t mouse_y;
     uint32_t mouse_buttons;
-    int32_t mouse_wheel;
+    int32_t mouse_wheel_x;
+    int32_t mouse_wheel_y;
     uint32_t gamepad_buttons;
-    uint32_t ticks;
-    int32_t session_unique;
+    int16_t gamepad_axes[8];
+    uint64_t ticks;
+    float delta;
     uint64_t frame_count;
-    char title[256];
-    uint32_t title_wasm_ptr;
-    uint32_t keyboard_wasm_ptr;
-    uint32_t mouse_wasm_ptr;
-    uint32_t gamepad_wasm_ptr;
 };
-
-static int32_t generate_unique_id(void) {
-    uint64_t t = (uint64_t)time(NULL);
-    uint64_t pc = 0;
-#if defined(_WIN32)
-    uint32_t pid = (uint32_t)GetCurrentProcessId();
-#elif defined(__unix__) || defined(__APPLE__) || defined(__linux__)
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    pc = (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
-    uint32_t pid = (uint32_t)getpid();
-#else
-    pc = (uint64_t)clock();
-    uint32_t pid = 1234;
-#endif
-    uint64_t h = t ^ (pc << 16) ^ ((uint64_t)pid << 32) ^ (uint64_t)clock();
-    h ^= h >> 30;
-    h *= 0xbf58476d1ce4e5b9ULL;
-    h ^= h >> 27;
-    h *= 0x94d049bb133111ebULL;
-    h ^= h >> 31;
-    int32_t res = (int32_t)h;
-    return res ? res : 1;
-}
-
-m3ApiRawFunction(host_wextension) {
-    m3ApiReturnType(uint32_t);
-    m3ApiGetArg(uint32_t, name_ptr);
-    m3ApiGetArg(uint32_t, data_ptr);
-
-    uint32_t mem_len = 0;
-    uint8_t* mem = m3_GetMemory(runtime, &mem_len, 0);
-    if (!mem || name_ptr >= mem_len) m3ApiReturn(0);
-
-    const char* name = (const char*)(mem + name_ptr);
-    WagnosticContext* ctx = (WagnosticContext*)m3_GetUserData(runtime);
-
-    if (strcmp(name, "title.set") == 0) {
-        if (data_ptr < mem_len) {
-            const char* new_title = (const char*)(mem + data_ptr);
-            if (ctx) {
-                strncpy(ctx->title, new_title, sizeof(ctx->title) - 1);
-                ctx->title[sizeof(ctx->title) - 1] = '\0';
-                ctx->title_wasm_ptr = data_ptr;
-            }
-            m3ApiReturn(data_ptr);
-        }
-        m3ApiReturn(0);
-    }
-
-    if (strcmp(name, "title.get") == 0) {
-        if (data_ptr != 0 && data_ptr < mem_len) {
-            if (ctx) {
-                strncpy((char*)(mem + data_ptr), ctx->title, mem_len - data_ptr);
-            }
-            m3ApiReturn(data_ptr);
-        }
-        m3ApiReturn(ctx ? ctx->title_wasm_ptr : 0);
-    }
-
-    if (strcmp(name, "std:keyboard") == 0) {
-        if (ctx) {
-            if (data_ptr != 0 && data_ptr < mem_len) {
-                ctx->keyboard_wasm_ptr = data_ptr;
-            } else if (ctx->keyboard_wasm_ptr == 0 && ctx->state_ptr != 0) {
-                ctx->keyboard_wasm_ptr = ctx->state_ptr + sizeof(WagnosticState);
-            }
-            m3ApiReturn(ctx->keyboard_wasm_ptr);
-        }
-        m3ApiReturn(0);
-    }
-
-    if (strcmp(name, "std:mouse") == 0) {
-        if (ctx) {
-            if (data_ptr != 0 && data_ptr < mem_len) {
-                ctx->mouse_wasm_ptr = data_ptr;
-            } else if (ctx->mouse_wasm_ptr == 0 && ctx->state_ptr != 0) {
-                ctx->mouse_wasm_ptr = ctx->state_ptr + sizeof(WagnosticState) + 256;
-            }
-            m3ApiReturn(ctx->mouse_wasm_ptr);
-        }
-        m3ApiReturn(0);
-    }
-
-    if (strcmp(name, "std:gamepad") == 0) {
-        if (ctx) {
-            if (data_ptr != 0 && data_ptr < mem_len) {
-                ctx->gamepad_wasm_ptr = data_ptr;
-            } else if (ctx->gamepad_wasm_ptr == 0 && ctx->state_ptr != 0) {
-                ctx->gamepad_wasm_ptr = ctx->state_ptr + sizeof(WagnosticState) + 256 + 16;
-            }
-            m3ApiReturn(ctx->gamepad_wasm_ptr);
-        }
-        m3ApiReturn(0);
-    }
-
-    m3ApiReturn(0);
-}
 
 static void refresh_memory(WagnosticContext* ctx) {
     if (!ctx || !ctx->runtime) return;
     ctx->mem = m3_GetMemory(ctx->runtime, &ctx->mem_len, 0);
 }
 
-static uint32_t compute_bpp(WagnosticState* s) {
-    if (!s) return 32;
-    uint32_t max_bit = 0;
-    if (s->r_bits && s->r_shift + s->r_bits > max_bit) max_bit = s->r_shift + s->r_bits;
-    if (s->g_bits && s->g_shift + s->g_bits > max_bit) max_bit = s->g_shift + s->g_bits;
-    if (s->b_bits && s->b_shift + s->b_bits > max_bit) max_bit = s->b_shift + s->b_bits;
-    if (s->a_bits && s->a_shift + s->a_bits > max_bit) max_bit = s->a_shift + s->a_bits;
+static uint32_t host_alloc(WagnosticContext* ctx, uint32_t size, uint32_t align) {
+    refresh_memory(ctx);
+    if (ctx->arena_offset == 0) {
+        ctx->arena_offset = (ctx->mem_len > 1048576) ? 0x20000 : 0x8000;
+    }
+    if (align > 1) {
+        ctx->arena_offset = (ctx->arena_offset + align - 1) & ~(align - 1);
+    }
+    uint32_t ptr = ctx->arena_offset;
+    ctx->arena_offset += size;
+    if (ctx->arena_offset > ctx->mem_len && ctx->runtime) {
+        uint32_t pages = (ctx->arena_offset + 65535) / 65536;
+        ResizeMemory(ctx->runtime, pages);
+        refresh_memory(ctx);
+    }
+    return ptr;
+}
 
-    if (max_bit <= 1) return 1;
-    if (max_bit <= 2) return 2;
-    if (max_bit <= 4) return 4;
-    if (max_bit <= 8) return 8;
-    if (max_bit <= 16) return 16;
-    if (max_bit <= 24) return 24;
-    if (max_bit <= 32) return 32;
-    return 64;
+m3ApiRawFunction(host_wextension) {
+    m3ApiReturnType(uint32_t);
+    m3ApiGetArg(uint32_t, name_ptr);
+    m3ApiGetArg(uint32_t, version);
+
+    WagnosticContext* ctx = (WagnosticContext*)m3_GetUserData(runtime);
+    if (!ctx) m3ApiReturn(0);
+
+    refresh_memory(ctx);
+    if (!ctx->mem || name_ptr >= ctx->mem_len) m3ApiReturn(0);
+
+    const char* name = (const char*)(ctx->mem + name_ptr);
+
+    if (strcmp(name, WSURFACE_EXTENSION) == 0 && version == WSURFACE_VERSION) {
+        if (ctx->surface_ptr == 0) {
+            ctx->surface_ptr = host_alloc(ctx, sizeof(wsurface_t), 4);
+            ctx->default_fb_ptr = host_alloc(ctx, 640 * 480 * 4, 4);
+            ctx->default_dirty_ptr = host_alloc(ctx, 32 * sizeof(wrect_t), 4);
+
+            wsurface_t *s = (wsurface_t*)(ctx->mem + ctx->surface_ptr);
+            s->version = 1;
+            s->size = sizeof(wsurface_t);
+            s->width = 320;
+            s->height = 240;
+            s->format = WSURFACE_RGBA8888;
+            s->stride = 320;
+            s->pixels = ctx->default_fb_ptr;
+            s->dirty_count = 0;
+            s->dirty_offset = ctx->default_dirty_ptr;
+        }
+        m3ApiReturn(ctx->surface_ptr);
+    }
+
+    if (strcmp(name, WCLOCK_EXTENSION) == 0 && version == WCLOCK_VERSION) {
+        if (ctx->clock_ptr == 0) {
+            ctx->clock_ptr = host_alloc(ctx, sizeof(wclock_t), 8);
+            wclock_t *c = (wclock_t*)(ctx->mem + ctx->clock_ptr);
+            c->version = 1;
+            c->size = sizeof(wclock_t);
+            c->ticks = 0;
+            c->frequency = 1000;
+            c->delta = 0.0166667f;
+        }
+        m3ApiReturn(ctx->clock_ptr);
+    }
+
+    if (strcmp(name, WKEYBOARD_EXTENSION) == 0 && version == WKEYBOARD_VERSION) {
+        if (ctx->keyboard_ptr == 0) {
+            ctx->keyboard_ptr = host_alloc(ctx, sizeof(wkeyboard_t), 4);
+            wkeyboard_t *k = (wkeyboard_t*)(ctx->mem + ctx->keyboard_ptr);
+            k->version = 1;
+            k->size = sizeof(wkeyboard_t);
+            memset(k->keys, 0, 256);
+        }
+        m3ApiReturn(ctx->keyboard_ptr);
+    }
+
+    if (strcmp(name, WMOUSE_EXTENSION) == 0 && version == WMOUSE_VERSION) {
+        if (ctx->mouse_ptr == 0) {
+            ctx->mouse_ptr = host_alloc(ctx, sizeof(wmouse_t), 4);
+            wmouse_t *m = (wmouse_t*)(ctx->mem + ctx->mouse_ptr);
+            m->version = 1;
+            m->size = sizeof(wmouse_t);
+            m->x = 0;
+            m->y = 0;
+            m->buttons = 0;
+            m->wheel_x = 0;
+            m->wheel_y = 0;
+        }
+        m3ApiReturn(ctx->mouse_ptr);
+    }
+
+    if (strcmp(name, WGAMEPAD_EXTENSION) == 0 && version == WGAMEPAD_VERSION) {
+        if (ctx->gamepad_ptr == 0) {
+            ctx->gamepad_ptr = host_alloc(ctx, sizeof(wgamepad_t), 4);
+            wgamepad_t *gp = (wgamepad_t*)(ctx->mem + ctx->gamepad_ptr);
+            gp->version = 1;
+            gp->size = sizeof(wgamepad_t);
+            gp->buttons = 0;
+            memset(gp->axes, 0, sizeof(gp->axes));
+        }
+        m3ApiReturn(ctx->gamepad_ptr);
+    }
+
+    if (strcmp(name, WAUDIO_EXTENSION) == 0 && version == WAUDIO_VERSION) {
+        if (ctx->audio_ptr == 0) {
+            ctx->audio_ptr = host_alloc(ctx, sizeof(waudio_t), 4);
+            ctx->default_audio_ptr = host_alloc(ctx, 4096 * 2 * sizeof(float), 4);
+            waudio_t *a = (waudio_t*)(ctx->mem + ctx->audio_ptr);
+            a->version = 1;
+            a->size = sizeof(waudio_t);
+            a->sample_rate = 44100;
+            a->channels = 2;
+            a->format = WAUDIO_F32;
+            a->buffer = ctx->default_audio_ptr;
+            a->capacity = 4096;
+            a->write = 0;
+            a->read = 0;
+        }
+        m3ApiReturn(ctx->audio_ptr);
+    }
+
+    m3ApiReturn(0);
 }
 
 WagnosticContext* wagnostic_create(const uint8_t* wasm_bytes, size_t wasm_size, uint32_t stack_size_bytes) {
@@ -189,7 +204,6 @@ WagnosticContext* wagnostic_create(const uint8_t* wasm_bytes, size_t wasm_size, 
         return NULL;
     }
 
-    strncpy(ctx->title, "Wagnostic (Gifnostic)", sizeof(ctx->title) - 1);
     ctx->runtime = m3_NewRuntime(ctx->env, stack_size_bytes, ctx);
     if (!ctx->runtime) {
         wagnostic_destroy(ctx);
@@ -210,7 +224,7 @@ WagnosticContext* wagnostic_create(const uint8_t* wasm_bytes, size_t wasm_size, 
         return NULL;
     }
 
-    m3_LinkRawFunction(ctx->module, "env", "wextension", "i(**)", &host_wextension);
+    m3_LinkRawFunction(ctx->module, "env", "wextension", "i(ii)", &host_wextension);
 
     res = m3_FindFunction(&ctx->f_wupdate, ctx->runtime, "wupdate");
     if (res || !ctx->f_wupdate) {
@@ -219,13 +233,6 @@ WagnosticContext* wagnostic_create(const uint8_t* wasm_bytes, size_t wasm_size, 
         return NULL;
     }
 
-    refresh_memory(ctx);
-    ctx->session_unique = generate_unique_id();
-
-    res = m3_CallV(ctx->f_wupdate);
-    if (!res) {
-        m3_GetResultsV(ctx->f_wupdate, &ctx->state_ptr);
-    }
     refresh_memory(ctx);
     return ctx;
 }
@@ -271,16 +278,28 @@ int wagnostic_step(WagnosticContext* ctx) {
 
     refresh_memory(ctx);
     if (ctx->mem) {
-        if (ctx->keyboard_wasm_ptr != 0 && ctx->keyboard_wasm_ptr + 256 <= ctx->mem_len) {
-            memcpy(ctx->mem + ctx->keyboard_wasm_ptr, ctx->keys, 256);
+        if (ctx->clock_ptr != 0 && ctx->clock_ptr + sizeof(wclock_t) <= ctx->mem_len) {
+            wclock_t* c = (wclock_t*)(ctx->mem + ctx->clock_ptr);
+            c->ticks = ctx->ticks;
+            c->frequency = 1000;
+            c->delta = ctx->delta > 0.0f ? ctx->delta : (1.0f / 60.0f);
         }
-        if (ctx->mouse_wasm_ptr != 0 && ctx->mouse_wasm_ptr + 16 <= ctx->mem_len) {
-            struct { int32_t x, y; uint32_t buttons; int32_t wheel; } m;
-            m.x = ctx->mouse_x; m.y = ctx->mouse_y; m.buttons = ctx->mouse_buttons; m.wheel = ctx->mouse_wheel;
-            memcpy(ctx->mem + ctx->mouse_wasm_ptr, &m, sizeof(m));
+        if (ctx->keyboard_ptr != 0 && ctx->keyboard_ptr + sizeof(wkeyboard_t) <= ctx->mem_len) {
+            wkeyboard_t* k = (wkeyboard_t*)(ctx->mem + ctx->keyboard_ptr);
+            memcpy(k->keys, ctx->keys, 256);
         }
-        if (ctx->gamepad_wasm_ptr != 0 && ctx->gamepad_wasm_ptr + 4 <= ctx->mem_len) {
-            memcpy(ctx->mem + ctx->gamepad_wasm_ptr, &ctx->gamepad_buttons, 4);
+        if (ctx->mouse_ptr != 0 && ctx->mouse_ptr + sizeof(wmouse_t) <= ctx->mem_len) {
+            wmouse_t* m = (wmouse_t*)(ctx->mem + ctx->mouse_ptr);
+            m->x = ctx->mouse_x;
+            m->y = ctx->mouse_y;
+            m->buttons = ctx->mouse_buttons;
+            m->wheel_x = ctx->mouse_wheel_x;
+            m->wheel_y = ctx->mouse_wheel_y;
+        }
+        if (ctx->gamepad_ptr != 0 && ctx->gamepad_ptr + sizeof(wgamepad_t) <= ctx->mem_len) {
+            wgamepad_t* gp = (wgamepad_t*)(ctx->mem + ctx->gamepad_ptr);
+            gp->buttons = ctx->gamepad_buttons;
+            memcpy(gp->axes, ctx->gamepad_axes, sizeof(ctx->gamepad_axes));
         }
     }
 
@@ -290,32 +309,59 @@ int wagnostic_step(WagnosticContext* ctx) {
         return 0;
     }
 
-    uint32_t keep = 0;
-    m3_GetResultsV(ctx->f_wupdate, &keep);
-    if (!keep) {
+    int32_t status = WUPDATE_OK;
+    m3_GetResultsV(ctx->f_wupdate, &status);
+
+    if (status == WUPDATE_EXIT) {
+        return 0;
+    }
+    if (status < 0) {
+        fprintf(stderr, "[gifnostic] wupdate() returned error %d\n", status);
         return 0;
     }
 
-    ctx->state_ptr = keep;
     refresh_memory(ctx);
     ctx->frame_count++;
-
-    ctx->mouse_wheel = 0;
+    ctx->mouse_wheel_x = 0;
+    ctx->mouse_wheel_y = 0;
 
     return 1;
 }
 
-WagnosticState* wagnostic_get_state(WagnosticContext* ctx) {
-    if (!ctx || !ctx->mem || ctx->state_ptr == 0) return NULL;
-    if (ctx->state_ptr + sizeof(WagnosticState) > ctx->mem_len) return NULL;
-    return (WagnosticState*)(ctx->mem + ctx->state_ptr);
+wsurface_t* wagnostic_get_surface(WagnosticContext* ctx) {
+    if (!ctx || !ctx->mem || ctx->surface_ptr == 0) return NULL;
+    if (ctx->surface_ptr + sizeof(wsurface_t) > ctx->mem_len) return NULL;
+    return (wsurface_t*)(ctx->mem + ctx->surface_ptr);
 }
 
-uint8_t* wagnostic_get_vram(WagnosticContext* ctx) {
-    WagnosticState* s = wagnostic_get_state(ctx);
-    if (!s || s->vram_offset == 0) return NULL;
-    if (ctx->state_ptr + s->vram_offset >= ctx->mem_len) return NULL;
-    return (uint8_t*)s + s->vram_offset;
+wclock_t* wagnostic_get_clock(WagnosticContext* ctx) {
+    if (!ctx || !ctx->mem || ctx->clock_ptr == 0) return NULL;
+    if (ctx->clock_ptr + sizeof(wclock_t) > ctx->mem_len) return NULL;
+    return (wclock_t*)(ctx->mem + ctx->clock_ptr);
+}
+
+wkeyboard_t* wagnostic_get_keyboard(WagnosticContext* ctx) {
+    if (!ctx || !ctx->mem || ctx->keyboard_ptr == 0) return NULL;
+    if (ctx->keyboard_ptr + sizeof(wkeyboard_t) > ctx->mem_len) return NULL;
+    return (wkeyboard_t*)(ctx->mem + ctx->keyboard_ptr);
+}
+
+wmouse_t* wagnostic_get_mouse(WagnosticContext* ctx) {
+    if (!ctx || !ctx->mem || ctx->mouse_ptr == 0) return NULL;
+    if (ctx->mouse_ptr + sizeof(wmouse_t) > ctx->mem_len) return NULL;
+    return (wmouse_t*)(ctx->mem + ctx->mouse_ptr);
+}
+
+wgamepad_t* wagnostic_get_gamepad(WagnosticContext* ctx) {
+    if (!ctx || !ctx->mem || ctx->gamepad_ptr == 0) return NULL;
+    if (ctx->gamepad_ptr + sizeof(wgamepad_t) > ctx->mem_len) return NULL;
+    return (wgamepad_t*)(ctx->mem + ctx->gamepad_ptr);
+}
+
+waudio_t* wagnostic_get_audio(WagnosticContext* ctx) {
+    if (!ctx || !ctx->mem || ctx->audio_ptr == 0) return NULL;
+    if (ctx->audio_ptr + sizeof(waudio_t) > ctx->mem_len) return NULL;
+    return (waudio_t*)(ctx->mem + ctx->audio_ptr);
 }
 
 uint8_t* wagnostic_get_wasm_memory(WagnosticContext* ctx, uint32_t* out_len) {
@@ -333,12 +379,13 @@ void wagnostic_set_key(WagnosticContext* ctx, uint8_t scancode, uint8_t is_down)
     ctx->keys[scancode] = is_down ? 1 : 0;
 }
 
-void wagnostic_set_mouse(WagnosticContext* ctx, int32_t x, int32_t y, uint32_t buttons, int32_t wheel) {
+void wagnostic_set_mouse(WagnosticContext* ctx, int32_t x, int32_t y, uint32_t buttons, int32_t wheel_x, int32_t wheel_y) {
     if (!ctx) return;
     ctx->mouse_x = x;
     ctx->mouse_y = y;
     ctx->mouse_buttons = buttons;
-    ctx->mouse_wheel += wheel;
+    ctx->mouse_wheel_x += wheel_x;
+    ctx->mouse_wheel_y += wheel_y;
 }
 
 void wagnostic_set_gamepad(WagnosticContext* ctx, uint32_t buttons) {
@@ -346,95 +393,51 @@ void wagnostic_set_gamepad(WagnosticContext* ctx, uint32_t buttons) {
     ctx->gamepad_buttons = buttons;
 }
 
-void wagnostic_set_ticks(WagnosticContext* ctx, uint32_t ticks_ms) {
+void wagnostic_set_ticks(WagnosticContext* ctx, uint64_t ticks_ms, float dt) {
     if (!ctx) return;
     ctx->ticks = ticks_ms;
-}
-
-static void decode_pixel_to_rgb(WagnosticState* s, uint8_t* vram, uint32_t x, uint32_t y, uint32_t W, uint32_t BPP, uint8_t* out_r, uint8_t* out_g, uint8_t* out_b, uint8_t* out_a) {
-    size_t idx = y * W + x;
-    uint32_t r_b = s ? s->r_bits : 0;
-    uint32_t r_s = s ? s->r_shift : 0;
-    uint32_t g_b = s ? s->g_bits : 0;
-    uint32_t g_s = s ? s->g_shift : 0;
-    uint32_t b_b = s ? s->b_bits : 0;
-    uint32_t b_s = s ? s->b_shift : 0;
-    uint32_t a_b = s ? s->a_bits : 0;
-    uint32_t a_s = s ? s->a_shift : 0;
-
-    if (!r_b && !g_b && !b_b && !a_b) {
-        if (BPP == 32) { r_b = 8; r_s = 16; g_b = 8; g_s = 8; b_b = 8; b_s = 0; a_b = 8; a_s = 24; }
-        else if (BPP == 24) { r_b = 8; r_s = 16; g_b = 8; g_s = 8; b_b = 8; b_s = 0; }
-        else if (BPP == 16) { r_b = 5; r_s = 11; g_b = 6; g_s = 5; b_b = 5; b_s = 0; }
-        else if (BPP == 8)  { r_b = 3; r_s = 5;  g_b = 3; g_s = 2; b_b = 2; b_s = 0; }
-        else { a_b = BPP; a_s = 0; }
-    }
-
-    uint64_t raw_pixel = 0;
-    if (BPP == 32) {
-        raw_pixel = ((uint32_t*)vram)[idx];
-    } else if (BPP == 24) {
-        raw_pixel = vram[idx * 3] | (vram[idx * 3 + 1] << 8) | (vram[idx * 3 + 2] << 16);
-    } else if (BPP == 16) {
-        raw_pixel = ((uint16_t*)vram)[idx];
-    } else if (BPP == 8) {
-        raw_pixel = vram[idx];
-    } else if (BPP == 4) {
-        uint8_t b = vram[idx / 2];
-        raw_pixel = (idx % 2 == 0) ? (b >> 4) : (b & 0x0F);
-    } else if (BPP == 2) {
-        uint8_t b = vram[idx / 4];
-        raw_pixel = (b >> (6 - 2 * (idx % 4))) & 0x03;
-    } else if (BPP == 1) {
-        uint8_t b = vram[idx / 8];
-        raw_pixel = (b >> (7 - (idx % 8))) & 0x01;
-    }
-
-    uint8_t r = 0, g = 0, b = 0, a = 255;
-
-    if (r_b > 0) {
-        uint32_t val = (raw_pixel >> r_s) & ((1U << r_b) - 1);
-        r = (val * 255) / ((1U << r_b) - 1);
-    }
-    if (g_b > 0) {
-        uint32_t val = (raw_pixel >> g_s) & ((1U << g_b) - 1);
-        g = (val * 255) / ((1U << g_b) - 1);
-    }
-    if (b_b > 0) {
-        uint32_t val = (raw_pixel >> b_s) & ((1U << b_b) - 1);
-        b = (val * 255) / ((1U << b_b) - 1);
-    }
-    if (a_b > 0) {
-        uint32_t val = (raw_pixel >> a_s) & ((1U << a_b) - 1);
-        a = (val * 255) / ((1U << a_b) - 1);
-    } else if (r_b == 0 && g_b == 0 && b_b == 0) {
-        uint32_t max_val = (1U << BPP) - 1;
-        uint8_t lum = max_val ? (uint8_t)((raw_pixel * 255) / max_val) : 0;
-        r = g = b = lum;
-    }
-
-    if (out_r) *out_r = r;
-    if (out_g) *out_g = g;
-    if (out_b) *out_b = b;
-    if (out_a) *out_a = a;
+    ctx->delta = dt;
 }
 
 int wagnostic_render_rgb24(WagnosticContext* ctx, uint8_t* out_rgb_buffer, size_t buffer_size) {
-    WagnosticState* s = wagnostic_get_state(ctx);
-    uint8_t* vram = wagnostic_get_vram(ctx);
-    if (!s || !vram || !out_rgb_buffer) return 0;
+    wsurface_t* s = wagnostic_get_surface(ctx);
+    if (!s || s->pixels == 0 || !out_rgb_buffer) return 0;
+    refresh_memory(ctx);
+    if (!ctx->mem) return 0;
 
     uint32_t W = s->width ? s->width : 320;
     uint32_t H = s->height ? s->height : 240;
-    uint32_t BPP = compute_bpp(s);
+    uint32_t stride = s->stride ? s->stride : W;
+    uint8_t* vram = ctx->mem + s->pixels;
 
     size_t required_sz = (size_t)W * H * 3;
     if (buffer_size < required_sz) return 0;
 
     for (uint32_t y = 0; y < H; y++) {
         for (uint32_t x = 0; x < W; x++) {
-            uint8_t r, g, b, a;
-            decode_pixel_to_rgb(s, vram, x, y, W, BPP, &r, &g, &b, &a);
+            size_t src_idx = y * stride + x;
+            uint8_t r = 0, g = 0, b = 0;
+
+            if (s->format == WSURFACE_RGBA8888) {
+                uint32_t px = ((uint32_t*)vram)[src_idx];
+                r = px & 0xFF;
+                g = (px >> 8) & 0xFF;
+                b = (px >> 16) & 0xFF;
+            } else if (s->format == WSURFACE_BGRA8888) {
+                uint32_t px = ((uint32_t*)vram)[src_idx];
+                b = px & 0xFF;
+                g = (px >> 8) & 0xFF;
+                r = (px >> 16) & 0xFF;
+            } else if (s->format == WSURFACE_RGB565) {
+                uint16_t px = ((uint16_t*)vram)[src_idx];
+                r = (px >> 11) & 0x1F; r = (r << 3) | (r >> 2);
+                g = (px >> 5)  & 0x3F; g = (g << 2) | (g >> 4);
+                b = px & 0x1F;        b = (b << 3) | (b >> 2);
+            } else if (s->format == WSURFACE_RGB888) {
+                uint8_t* p = vram + src_idx * 3;
+                r = p[0]; g = p[1]; b = p[2];
+            }
+
             size_t out_idx = (y * W + x) * 3;
             out_rgb_buffer[out_idx + 0] = r;
             out_rgb_buffer[out_idx + 1] = g;
@@ -445,21 +448,46 @@ int wagnostic_render_rgb24(WagnosticContext* ctx, uint8_t* out_rgb_buffer, size_
 }
 
 int wagnostic_render_rgba32(WagnosticContext* ctx, uint8_t* out_rgba_buffer, size_t buffer_size) {
-    WagnosticState* s = wagnostic_get_state(ctx);
-    uint8_t* vram = wagnostic_get_vram(ctx);
-    if (!s || !vram || !out_rgba_buffer) return 0;
+    wsurface_t* s = wagnostic_get_surface(ctx);
+    if (!s || s->pixels == 0 || !out_rgba_buffer) return 0;
+    refresh_memory(ctx);
+    if (!ctx->mem) return 0;
 
     uint32_t W = s->width ? s->width : 320;
     uint32_t H = s->height ? s->height : 240;
-    uint32_t BPP = compute_bpp(s);
+    uint32_t stride = s->stride ? s->stride : W;
+    uint8_t* vram = ctx->mem + s->pixels;
 
     size_t required_sz = (size_t)W * H * 4;
     if (buffer_size < required_sz) return 0;
 
     for (uint32_t y = 0; y < H; y++) {
         for (uint32_t x = 0; x < W; x++) {
-            uint8_t r, g, b, a;
-            decode_pixel_to_rgb(s, vram, x, y, W, BPP, &r, &g, &b, &a);
+            size_t src_idx = y * stride + x;
+            uint8_t r = 0, g = 0, b = 0, a = 255;
+
+            if (s->format == WSURFACE_RGBA8888) {
+                uint32_t px = ((uint32_t*)vram)[src_idx];
+                r = px & 0xFF;
+                g = (px >> 8) & 0xFF;
+                b = (px >> 16) & 0xFF;
+                a = (px >> 24) & 0xFF;
+            } else if (s->format == WSURFACE_BGRA8888) {
+                uint32_t px = ((uint32_t*)vram)[src_idx];
+                b = px & 0xFF;
+                g = (px >> 8) & 0xFF;
+                r = (px >> 16) & 0xFF;
+                a = (px >> 24) & 0xFF;
+            } else if (s->format == WSURFACE_RGB565) {
+                uint16_t px = ((uint16_t*)vram)[src_idx];
+                r = (px >> 11) & 0x1F; r = (r << 3) | (r >> 2);
+                g = (px >> 5)  & 0x3F; g = (g << 2) | (g >> 4);
+                b = px & 0x1F;        b = (b << 3) | (b >> 2);
+            } else if (s->format == WSURFACE_RGB888) {
+                uint8_t* p = vram + src_idx * 3;
+                r = p[0]; g = p[1]; b = p[2];
+            }
+
             size_t out_idx = (y * W + x) * 4;
             out_rgba_buffer[out_idx + 0] = r;
             out_rgba_buffer[out_idx + 1] = g;
@@ -471,7 +499,7 @@ int wagnostic_render_rgba32(WagnosticContext* ctx, uint8_t* out_rgba_buffer, siz
 }
 
 int wagnostic_dump_ppm(WagnosticContext* ctx, const char* out_filename) {
-    WagnosticState* s = wagnostic_get_state(ctx);
+    wsurface_t* s = wagnostic_get_surface(ctx);
     if (!s || !out_filename) return 0;
 
     uint32_t W = s->width ? s->width : 320;
@@ -501,7 +529,7 @@ int wagnostic_dump_ppm(WagnosticContext* ctx, const char* out_filename) {
 }
 
 int wagnostic_record_gif(WagnosticContext* ctx, const char* out_filename, uint32_t total_frames, uint32_t frame_skip, uint16_t delay_cs) {
-    WagnosticState* s = wagnostic_get_state(ctx);
+    wsurface_t* s = wagnostic_get_surface(ctx);
     if (!s || !out_filename) return 0;
 
     uint32_t W = s->width ? s->width : 320;
@@ -522,8 +550,8 @@ int wagnostic_record_gif(WagnosticContext* ctx, const char* out_filename, uint32
 
     uint32_t captured_frames = 0;
     for (uint32_t f = 0; total_frames == 0 || f < total_frames; f++) {
-        uint32_t current_ticks = (uint32_t)(f * 1000 / 60);
-        wagnostic_set_ticks(ctx, current_ticks);
+        uint64_t current_ticks = (uint64_t)(f * 1000 / 60);
+        wagnostic_set_ticks(ctx, current_ticks, 1.0f / 60.0f);
 
         if (!wagnostic_step(ctx)) break;
 
@@ -548,25 +576,18 @@ void wagnostic_print_debug(WagnosticContext* ctx, FILE* stream) {
         return;
     }
 
-    WagnosticState* s = wagnostic_get_state(ctx);
+    wsurface_t* s = wagnostic_get_surface(ctx);
     fprintf(stream, "=== Gifnostic Headless Debug Info ===\n");
     fprintf(stream, "Frame Count:   %llu\n", (unsigned long long)ctx->frame_count);
-    fprintf(stream, "State Ptr:     0x%08X\n", ctx->state_ptr);
     fprintf(stream, "Linear Memory: %u bytes\n", ctx->mem_len);
 
     if (!s) {
-        fprintf(stream, "State Struct: NULL (Invalid or out of bounds)\n");
-        return;
+        fprintf(stream, "Surface Extension: NOT REGISTERED\n");
+    } else {
+        fprintf(stream, "Surface Config: %ux%u (Format: %u, Stride: %u, Pixels: 0x%08X)\n",
+                s->width, s->height, s->format, s->stride, s->pixels);
     }
-
-    uint32_t BPP = compute_bpp(s);
-    fprintf(stream, "Screen Config: %ux%u (BPP: %u)\n",
-            s->width, s->height, BPP);
-    fprintf(stream, "Offsets:       VRAM=0x%08X\n", s->vram_offset);
-    fprintf(stream, "Bitfield Config: R(%u<<%u) G(%u<<%u) B(%u<<%u) A(%u<<%u)\n",
-            s->r_bits, s->r_shift, s->g_bits, s->g_shift,
-            s->b_bits, s->b_shift, s->a_bits, s->a_shift);
-    fprintf(stream, "Input Pointers: Keyboard=0x%08X Mouse=0x%08X Gamepad=0x%08X\n",
-            ctx->keyboard_wasm_ptr, ctx->mouse_wasm_ptr, ctx->gamepad_wasm_ptr);
+    fprintf(stream, "Extensions: Keyboard=0x%08X Mouse=0x%08X Gamepad=0x%08X Clock=0x%08X Audio=0x%08X\n",
+            ctx->keyboard_ptr, ctx->mouse_ptr, ctx->gamepad_ptr, ctx->clock_ptr, ctx->audio_ptr);
     fprintf(stream, "=====================================\n");
 }

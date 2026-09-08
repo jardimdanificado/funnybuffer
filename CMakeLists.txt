@@ -18,6 +18,7 @@ set(WAGNOSTIC_SOURCES
 add_executable(wagnostic ${WAGNOSTIC_SOURCES})
 
 target_include_directories(wagnostic PRIVATE
+    include
     emulators/wasm3/wasm3/source
     ${SDL2_INCLUDE_DIRS}
 )
@@ -44,6 +45,7 @@ set(GIFNOSTIC_SOURCES
 add_executable(gifnostic ${GIFNOSTIC_SOURCES})
 
 target_include_directories(gifnostic PRIVATE
+    include
     emulators/wasm3/wasm3/source
     emulators/gifnostic
 )

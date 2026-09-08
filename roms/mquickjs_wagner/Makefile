@@ -37,6 +37,7 @@ CFLAGS = \
 	-DLODEPNG_NO_COMPILE_ERROR_TEXT \
 	-Dalloca=__builtin_alloca \
 	-DUINT_MAX=0xffffffff \
+	-I../../include \
 	-I.
 
 LDFLAGS = \

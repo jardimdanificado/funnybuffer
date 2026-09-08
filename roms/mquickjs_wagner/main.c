@@ -372,7 +372,11 @@ JSValue js_set_size(JSContext *ctx, JSValue *this_val, int argc, JSValue *argv) 
         JS_ToInt32(ctx, &w, argv[0]);
         JS_ToInt32(ctx, &h, argv[1]);
         if (w > 0 && h > 0 && w <= 640 && h <= 480) {
-            w_setup(&_wagner_rom.state, NULL, w, h, WAGNER_CFG_BPP, w_scale);
+            if (_wagner_surface_ptr) {
+                _wagner_surface_ptr->width = w;
+                _wagner_surface_ptr->height = h;
+                _wagner_surface_ptr->stride = w;
+            }
             wagner.width = w; wagner.height = h;
             screen.width = w; screen.height = h;
             screen.stride = w;
@@ -517,7 +521,7 @@ void setup() {
     JS_SetPropertyStr(ctx, js_wagnostic_obj, "mouse_down", JS_NewBool(wagner.mouse_down));
     JS_SetPropertyStr(ctx, js_wagnostic_obj, "mouse_pressed", JS_NewBool(wagner.mouse_pressed));
     JS_SetPropertyStr(ctx, js_wagnostic_obj, "mouse_released", JS_NewBool(wagner.mouse_released));
-    JS_SetPropertyStr(ctx, js_wagnostic_obj, "mouse_wheel", JS_NewInt32(ctx, _wagner_mouse_ptr ? _wagner_mouse_ptr->wheel : 0));
+    JS_SetPropertyStr(ctx, js_wagnostic_obj, "mouse_wheel", JS_NewInt32(ctx, _wagner_mouse_ptr ? _wagner_mouse_ptr->wheel_y : 0));
     JS_SetPropertyStr(ctx, global, "wagnostic", js_wagnostic_obj);
     JS_SetPropertyStr(ctx, global, "wagner", js_wagnostic_obj);
 
@@ -589,7 +593,7 @@ void draw() {
     JS_SetPropertyStr(ctx, wag_obj, "mouse_down", JS_NewBool(wagner.mouse_down));
     JS_SetPropertyStr(ctx, wag_obj, "mouse_pressed", JS_NewBool(wagner.mouse_pressed));
     JS_SetPropertyStr(ctx, wag_obj, "mouse_released", JS_NewBool(wagner.mouse_released));
-    JS_SetPropertyStr(ctx, wag_obj, "mouse_wheel", JS_NewInt32(ctx, _wagner_mouse_ptr ? _wagner_mouse_ptr->wheel : 0));
+    JS_SetPropertyStr(ctx, wag_obj, "mouse_wheel", JS_NewInt32(ctx, _wagner_mouse_ptr ? _wagner_mouse_ptr->wheel_y : 0));
     JS_SetPropertyStr(ctx, wag_obj, "fps", JS_NewInt32(ctx, wagner.fps));
     JS_SetPropertyStr(ctx, wag_obj, "frame_count", JS_NewInt32(ctx, wagner.frame_count));
     

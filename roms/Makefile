@@ -17,7 +17,8 @@ ROM_DIRS = \
 	exotic2_test \
 	mquickjs_wagner \
 	microqjs_raw \
-	wextension_test
+	wextension_test \
+	audio_test
 
 
 WASM3_BIN ?= $(firstword $(wildcard ../build/wagnostic ../examples/wagnostic wagnostic))

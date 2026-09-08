@@ -1,77 +1,76 @@
-#include <stdint.h>
-#include <stddef.h>
+#include "wagnostic.h"
+#include "surface.h"
+#include "clock.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "gamepad.h"
+#include "audio.h"
 
-// Import Wagnostic extension dispatcher
-extern void* wextension(const char* name, void* ptr);
+static wsurface_t  *surface;
+static wclock_t    *clock_ext;
+static wkeyboard_t *keyboard;
+static wmouse_t    *mouse;
+static wgamepad_t  *gamepad;
+static waudio_t    *audio;
 
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} State;
-
-static struct {
-    State s;
-    uint8_t vram[320 * 240 * 2];
-} rom;
-
-static uint16_t* fb = (uint16_t*)rom.vram;
+static int initialized = 0;
+static int test_passed = 0;
 
 static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
     return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
-static int strcmp(const char* s1, const char* s2) {
-    while (*s1 && (*s1 == *s2)) { s1++; s2++; }
-    return *(const unsigned char*)s1 - *(const unsigned char*)s2;
-}
-
-static int initialized = 0;
-static int test_passed = 0;
-static char get_buf[128];
-
-int wupdate() {
+int32_t wupdate(void) {
     if (!initialized) {
-        rom.s.width = 320;
-        rom.s.height = 240;
-        rom.s.r_bits = 5; rom.s.r_shift = 11;
-        rom.s.g_bits = 6; rom.s.g_shift = 5;
-        rom.s.b_bits = 5; rom.s.b_shift = 0;
-        rom.s.vram_offset = (uint32_t)((uint8_t*)rom.vram - (uint8_t*)&rom.s);
+        // Test 1: Discover extensions
+        surface   = (wsurface_t*)wextension("std:surface", 1);
+        clock_ext = (wclock_t*)wextension("std:clock", 1);
+        keyboard  = (wkeyboard_t*)wextension("std:keyboard", 1);
+        mouse     = (wmouse_t*)wextension("std:mouse", 1);
+        gamepad   = (wgamepad_t*)wextension("std:gamepad", 1);
+        audio     = (waudio_t*)wextension("std:audio", 1);
 
-        // Test 1: Unknown extension returns NULL
-        void* res1 = wextension("unknown:custom_feature", NULL);
-        
-        // Test 2: Set window title via title.set extension
-        const char* my_title = "Wagnostic Title Extension Test";
-        void* res2 = wextension("title.set", (void*)my_title);
+        // Test 2: Unknown extension returns NULL
+        void* unk = wextension("unknown:custom", 1);
 
-        // Test 3: Get window title via title.get extension
-        get_buf[0] = '\0';
-        void* res3 = wextension("title.get", get_buf);
+        // Test 3: Unsupported version returns NULL
+        void* inv_ver = wextension("std:surface", 999);
 
-        // Test 4: Peripheral std:* extensions
-        static uint8_t kbd_buf[256];
-        static struct { int32_t x, y; uint32_t b; int32_t w; } m_buf;
-        static uint32_t gp_buf;
-        void* kbd_ptr = wextension("std:keyboard", kbd_buf);
-        void* mouse_ptr = wextension("std:mouse", &m_buf);
-        void* gp_ptr = wextension("std:gamepad", &gp_buf);
+        test_passed = (surface != NULL) &&
+                      (clock_ext != NULL) &&
+                      (keyboard != NULL) &&
+                      (mouse != NULL) &&
+                      (gamepad != NULL) &&
+                      (audio != NULL) &&
+                      (unk == NULL) &&
+                      (inv_ver == NULL) &&
+                      (surface->version == 1) &&
+                      (clock_ext->version == 1) &&
+                      (keyboard->version == 1) &&
+                      (mouse->version == 1) &&
+                      (gamepad->version == 1) &&
+                      (audio->version == 1);
 
-        test_passed = (res1 == NULL) && (res2 != NULL) && (res3 != NULL) && 
-                      (strcmp(get_buf, my_title) == 0) &&
-                      (kbd_ptr != NULL) && (mouse_ptr != NULL) && (gp_ptr != NULL);
+        if (surface) {
+            surface->format = WSURFACE_RGB565;
+        }
 
         initialized = 1;
     }
 
-    uint16_t color = test_passed ? rgb565(30, 180, 50) : rgb565(200, 30, 30);
-    for (int i = 0; i < 320 * 240; i++) {
-        fb[i] = color;
+    if (surface && surface->pixels) {
+        uint16_t color = test_passed ? rgb565(30, 180, 50) : rgb565(200, 30, 30);
+        uint16_t *fb = (uint16_t*)surface->pixels;
+        uint32_t w = surface->width ? surface->width : 320;
+        uint32_t h = surface->height ? surface->height : 240;
+        uint32_t stride = surface->stride ? surface->stride : w;
+
+        for (uint32_t y = 0; y < h; y++) {
+            for (uint32_t x = 0; x < w; x++) {
+                fb[y * stride + x] = color;
+            }
+        }
     }
 
-    return (int)&rom.s;
+    return WUPDATE_OK;
 }

@@ -1,13 +1,17 @@
-typedef struct { int x, y, w, h; } Rect;
 /*
- * Wagnostic Reference Emulator — wasm3 + SDL2 host
+ * Wagnostic 2.0 Reference Emulator — wasm3 + SDL2 host
  *
- * Loads a .wasm ROM file, executes its wupdate() function each frame.
- * wupdate() returns a pointer (i32 offset) to a WagnosticState struct
- * in WASM linear memory. The host reads/writes that struct directly.
+ * Implements the Wagnostic 2.0 ABI:
+ * - Exports: wupdate() -> int32_t (WUPDATE_OK, WUPDATE_EXIT, WUPDATE_ERROR)
+ * - Imports: env.wextension(const char *name, uint32_t version) -> void*
  *
- * Build: see CMakeLists.txt
- * Usage: wagnostic <rom.wasm>
+ * Standard Extensions:
+ * - std:surface  (v1)
+ * - std:clock    (v1)
+ * - std:keyboard (v1)
+ * - std:mouse    (v1)
+ * - std:gamepad  (v1)
+ * - std:audio    (v1)
  */
 
 #include <stdio.h>
@@ -25,45 +29,47 @@ typedef struct { int x, y, w, h; } Rect;
 #include "m3_env.h"
 #include "m3_api_libc.h"
 
-static int32_t generate_unique_id(void) {
-    uint64_t t = (uint64_t)time(NULL);
-    uint64_t pc = (uint64_t)SDL_GetPerformanceCounter();
-    uint32_t pid = 0;
-#if defined(_WIN32)
-    pid = (uint32_t)GetCurrentProcessId();
-#elif defined(__unix__) || defined(__APPLE__) || defined(__linux__)
-    pid = (uint32_t)getpid();
-#endif
-    uint64_t h = t ^ (pc << 16) ^ ((uint64_t)pid << 32) ^ (uint64_t)clock();
-    h ^= h >> 30;
-    h *= 0xbf58476d1ce4e5b9ULL;
-    h ^= h >> 27;
-    h *= 0x94d049bb133111ebULL;
-    h ^= h >> 31;
-    int32_t res = (int32_t)h;
-    return res ? res : 1;
-}
+#include "wagnostic.h"
+#include "surface.h"
+#include "clock.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "gamepad.h"
+#include "audio.h"
 
 /* ================================================================
- * WagnosticState struct (must match wagnostic.h exactly)
+ * Globals & State
  * ================================================================ */
 
+static IM3Module  g_module  = NULL;
+static IM3Runtime g_runtime = NULL;
 
+static uint8_t *g_mem     = NULL;
+static uint32_t g_mem_len = 0;
 
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} WagnosticState;
+static uint32_t g_surface_ptr  = 0;
+static uint32_t g_clock_ptr    = 0;
+static uint32_t g_keyboard_ptr = 0;
+static uint32_t g_mouse_ptr    = 0;
+static uint32_t g_gamepad_ptr  = 0;
+static uint32_t g_audio_ptr    = 0;
 
-static_assert(sizeof(WagnosticState) == 44, "WagnosticState size mismatch — check struct layout");
+static uint32_t g_default_fb_ptr    = 0;
+static uint32_t g_default_dirty_ptr = 0;
+static uint32_t g_default_audio_ptr = 0;
 
-static uint32_t g_keyboard_wasm_ptr = 0;
-static uint32_t g_mouse_wasm_ptr = 0;
-static uint32_t g_gamepad_wasm_ptr = 0;
+static uint32_t g_arena_offset = 0;
+
+static SDL_Window   *g_window   = NULL;
+static SDL_Renderer *g_renderer = NULL;
+static SDL_Texture  *g_texture  = NULL;
+
+static SDL_AudioDeviceID g_audio_dev   = 0;
+static SDL_mutex        *g_audio_mutex = NULL;
+
+static uint32_t g_prev_w = 0;
+static uint32_t g_prev_h = 0;
+static uint32_t g_prev_fmt = 0;
 
 static int g_is_tar = 0;
 static char g_rom_path[1024] = {0};
@@ -105,572 +111,186 @@ static uint8_t* tar_extract_file(const char* tar_path, const char* target_filena
     return best_data;
 }
 
-
-
-
-static inline uint32_t compute_bpp(WagnosticState* s) {
-    if (!s) return 32;
-    uint32_t max_bit = 0;
-    if (s->r_bits && s->r_shift + s->r_bits > max_bit) max_bit = s->r_shift + s->r_bits;
-    if (s->g_bits && s->g_shift + s->g_bits > max_bit) max_bit = s->g_shift + s->g_bits;
-    if (s->b_bits && s->b_shift + s->b_bits > max_bit) max_bit = s->b_shift + s->b_bits;
-    if (s->a_bits && s->a_shift + s->a_bits > max_bit) max_bit = s->a_shift + s->a_bits;
-    
-    // Round up to nearest standard size
-    if (max_bit <= 1) return 1;
-    if (max_bit <= 2) return 2;
-    if (max_bit <= 4) return 4;
-    if (max_bit <= 8) return 8;
-    if (max_bit <= 16) return 16;
-    if (max_bit <= 24) return 24;
-    if (max_bit <= 32) return 32;
-    return 64;
-}
-
-static_assert(sizeof(WagnosticState) == 44, "WagnosticState size mismatch — check struct layout");
-
 /* ================================================================
- * Globals
+ * Memory & Arena Helpers
  * ================================================================ */
 
-static IM3Module  g_module  = NULL;
-static IM3Runtime g_runtime = NULL;
-
-static uint8_t *g_mem     = NULL;
-static uint32_t g_mem_len = 0;
-
-static uint32_t g_state_ptr = 0;
-
-/* ================================================================
- * Pointer helpers
- * ================================================================ */
-
-static inline WagnosticState *get_state(void) {
-    if (!g_mem || g_state_ptr == 0) return NULL;
-    if (g_state_ptr + sizeof(WagnosticState) > g_mem_len) return NULL;
-    return (WagnosticState *)(g_mem + g_state_ptr);
+static void refresh_memory(void) {
+    g_mem = m3_GetMemory(g_runtime, &g_mem_len, 0);
 }
 
-static inline uint8_t *get_vram(WagnosticState *s) {
-    if (!s || s->vram_offset == 0) return NULL;
-    return (uint8_t *)s + s->vram_offset;
-}
-
-
-
-/* ================================================================
- * Screen config with defaults
- * ================================================================ */
-
-static void read_screen_config(WagnosticState *s,
-                               uint32_t *W, uint32_t *H,
-                               uint32_t *BPP, uint32_t *SCALE) {
-    *W     = s ? s->width  : 0;
-    *H     = s ? s->height : 0;
-    *BPP = compute_bpp(s);
-    *SCALE = 1;
-    if (*W == 0)     *W = 320;
-    if (*H == 0)     *H = 240;
-    if (*BPP == 0)   *BPP = 32;
+static uint32_t host_alloc(uint32_t size, uint32_t align) {
+    refresh_memory();
+    if (g_arena_offset == 0) {
+        /* Allocate from safe zone in WASM memory */
+        g_arena_offset = (g_mem_len > 1048576) ? 0x20000 : 0x8000;
+    }
+    if (align > 1) {
+        g_arena_offset = (g_arena_offset + align - 1) & ~(align - 1);
+    }
+    uint32_t ptr = g_arena_offset;
+    g_arena_offset += size;
+    if (g_arena_offset > g_mem_len && g_runtime) {
+        uint32_t pages = (g_arena_offset + 65535) / 65536;
+        ResizeMemory(g_runtime, pages);
+        refresh_memory();
+    }
+    return ptr;
 }
 
 /* ================================================================
- * Pixel conversion helpers
+ * Audio Callback
  * ================================================================ */
 
-static inline uint32_t rgb332_to_abgr8888(uint8_t p) {
-    uint32_t r = ((p >> 5) & 0x07) * 255 / 7;
-    uint32_t g = ((p >> 2) & 0x07) * 255 / 7;
-    uint32_t b = (p & 0x03) * 255 / 3;
-    return 0xFF000000u | (b << 16) | (g << 8) | r;
-}
-
-static inline uint32_t rgb565_to_abgr8888(uint16_t p) {
-    uint32_t r = ((p >> 11) & 0x1F) * 255 / 31;
-    uint32_t g = ((p >> 5) & 0x3F) * 255 / 63;
-    uint32_t b = (p & 0x1F) * 255 / 31;
-    return 0xFF000000u | (b << 16) | (g << 8) | r;
-}
-
-
-
-/* ================================================================
- * Render helpers
- * ================================================================ */
-
-typedef enum {
-    FMT_GENERIC = 0,
-    FMT_RGBA8888_LE,
-    FMT_BGRA8888_LE,
-    FMT_RGBX8888_LE,
-    FMT_BGRX8888_LE,
-    FMT_RGB888,
-    FMT_BGR888,
-    FMT_RGB565,
-    FMT_BGR565,
-    FMT_RGB555,
-    FMT_BGR555,
-    FMT_RGB444,
-    FMT_RGBA4444,
-    FMT_ARGB4444,
-    FMT_RGB333,
-    FMT_RGB332,
-    FMT_RGB222,
-    FMT_RGBA2222,
-    FMT_RGB111,
-    FMT_GRAY8,
-    FMT_RGB666,
-    FMT_MONO1,
-    FMT_MONO2,
-    FMT_MONO4
-} WagnosticPixelFormat;
-
-static WagnosticPixelFormat detect_pixel_format(WagnosticState *s, uint32_t BPP,
-                                               uint32_t *r_b_out, uint32_t *r_s_out,
-                                               uint32_t *g_b_out, uint32_t *g_s_out,
-                                               uint32_t *b_b_out, uint32_t *b_s_out,
-                                               uint32_t *a_b_out, uint32_t *a_s_out) {
-    uint32_t r_b = s ? s->r_bits : 0;
-    uint32_t r_s = s ? s->r_shift : 0;
-    uint32_t g_b = s ? s->g_bits : 0;
-    uint32_t g_s = s ? s->g_shift : 0;
-    uint32_t b_b = s ? s->b_bits : 0;
-    uint32_t b_s = s ? s->b_shift : 0;
-    uint32_t a_b = s ? s->a_bits : 0;
-    uint32_t a_s = s ? s->a_shift : 0;
-    uint32_t x_b = 0;
-
-    if (!r_b && !g_b && !b_b && !a_b && !x_b) {
-        if (BPP == 32) { r_b = 8; r_s = 16; g_b = 8; g_s = 8; b_b = 8; b_s = 0; a_b = 8; a_s = 24; }
-        else if (BPP == 24) { r_b = 8; r_s = 16; g_b = 8; g_s = 8; b_b = 8; b_s = 0; }
-        else if (BPP == 16) { r_b = 5; r_s = 11; g_b = 6; g_s = 5; b_b = 5; b_s = 0; }
-        else if (BPP == 8)  { r_b = 3; r_s = 5;  g_b = 3; g_s = 2; b_b = 2; b_s = 0; }
-        else if (BPP == 4 || BPP == 2 || BPP == 1) { a_b = BPP; a_s = 0; }
+static void host_audio_callback(void *userdata, Uint8 *stream, int len) {
+    (void)userdata;
+    if (!g_mem || g_audio_ptr == 0) {
+        memset(stream, 0, len);
+        return;
+    }
+    waudio_t *a = (waudio_t*)(g_mem + g_audio_ptr);
+    if (!a || a->buffer == 0 || a->capacity == 0) {
+        memset(stream, 0, len);
+        return;
     }
 
-    if (r_b_out) *r_b_out = r_b; if (r_s_out) *r_s_out = r_s;
-    if (g_b_out) *g_b_out = g_b; if (g_s_out) *g_s_out = g_s;
-    if (b_b_out) *b_b_out = b_b; if (b_s_out) *b_s_out = b_s;
-    if (a_b_out) *a_b_out = a_b; if (a_s_out) *a_s_out = a_s;
+    uint32_t channels = a->channels ? a->channels : 2;
+    uint32_t sample_size = (a->format == WAUDIO_S16) ? sizeof(int16_t) : sizeof(float);
+    uint32_t frame_size = channels * sample_size;
+    if (frame_size == 0) { memset(stream, 0, len); return; }
 
-    if (BPP == 1) return FMT_MONO1;
-    if (BPP == 2) return FMT_MONO2;
-    if (BPP == 4) return FMT_MONO4;
+    int wanted_frames = len / (int)frame_size;
+    uint32_t read_idx = a->read;
+    uint32_t write_idx = a->write;
+    uint32_t available = (write_idx >= read_idx) ? (write_idx - read_idx) : 0;
+    if (available > a->capacity) available = a->capacity;
 
-    if (BPP == 32) {
-        if (r_b == 8 && r_s == 0  && g_b == 8 && g_s == 8 && b_b == 8 && b_s == 16 && a_b == 8 && a_s == 24) return FMT_RGBA8888_LE;
-        if (r_b == 8 && r_s == 16 && g_b == 8 && g_s == 8 && b_b == 8 && b_s == 0  && a_b == 8 && a_s == 24) return FMT_BGRA8888_LE;
-        if (r_b == 8 && r_s == 0  && g_b == 8 && g_s == 8 && b_b == 8 && b_s == 16 && a_b == 0) return FMT_RGBX8888_LE;
-        if (r_b == 8 && r_s == 16 && g_b == 8 && g_s == 8 && b_b == 8 && b_s == 0  && a_b == 0) return FMT_BGRX8888_LE;
+    int frames_to_copy = (wanted_frames < (int)available) ? wanted_frames : (int)available;
+    uint8_t *ring_buf = g_mem + a->buffer;
+
+    for (int i = 0; i < frames_to_copy; i++) {
+        uint32_t src_frame_idx = (read_idx + i) % a->capacity;
+        memcpy(stream + i * frame_size, ring_buf + src_frame_idx * frame_size, frame_size);
     }
-
-    if (BPP == 24) {
-        if (r_b == 8 && r_s == 0  && g_b == 8 && g_s == 8 && b_b == 8 && b_s == 16) return FMT_RGB888;
-        if (r_b == 8 && r_s == 16 && g_b == 8 && g_s == 8 && b_b == 8 && b_s == 0)  return FMT_BGR888;
+    if (frames_to_copy < wanted_frames) {
+        memset(stream + frames_to_copy * frame_size, 0, (wanted_frames - frames_to_copy) * frame_size);
     }
-
-    if (BPP == 16) {
-        if (r_b == 5 && r_s == 11 && g_b == 6 && g_s == 5  && b_b == 5 && b_s == 0  && a_b == 0) return FMT_RGB565;
-        if (r_b == 5 && r_s == 0  && g_b == 6 && g_s == 5  && b_b == 5 && b_s == 11 && a_b == 0) return FMT_BGR565;
-        if (r_b == 5 && r_s == 10 && g_b == 5 && g_s == 5  && b_b == 5 && b_s == 0  && (a_b == 0 || a_b == 1)) return FMT_RGB555;
-        if (r_b == 5 && r_s == 0  && g_b == 5 && g_s == 5  && b_b == 5 && b_s == 10 && (a_b == 0 || a_b == 1)) return FMT_BGR555;
-        if (r_b == 4 && r_s == 8  && g_b == 4 && g_s == 4  && b_b == 4 && b_s == 0  && a_b == 0) return FMT_RGB444;
-        if (r_b == 4 && r_s == 12 && g_b == 4 && g_s == 8  && b_b == 4 && b_s == 4  && a_b == 4 && a_s == 0) return FMT_RGBA4444;
-        if (r_b == 4 && r_s == 8  && g_b == 4 && g_s == 4  && b_b == 4 && b_s == 0  && a_b == 4 && a_s == 12) return FMT_ARGB4444;
-        if (r_b == 3 && r_s == 6  && g_b == 3 && g_s == 3  && b_b == 3 && b_s == 0  && a_b == 0) return FMT_RGB333;
-    }
-
-    if (BPP == 8) {
-        if (r_b == 3 && r_s == 5 && g_b == 3 && g_s == 2 && b_b == 2 && b_s == 0 && a_b == 0) return FMT_RGB332;
-        if (r_b == 2 && r_s == 4 && g_b == 2 && g_s == 2 && b_b == 2 && b_s == 0 && a_b == 0) return FMT_RGB222;
-        if (r_b == 2 && r_s == 6 && g_b == 2 && g_s == 4 && b_b == 2 && b_s == 2 && a_b == 2 && a_s == 0) return FMT_RGBA2222;
-        if (r_b == 1 && r_s == 2 && g_b == 1 && g_s == 1 && b_b == 1 && b_s == 0 && a_b == 0) return FMT_RGB111;
-        if (r_b == 0 && g_b == 0 && b_b == 0) return FMT_GRAY8;
-    }
-
-    if ((BPP == 24 || BPP == 32) && r_b == 6 && r_s == 12 && g_b == 6 && g_s == 6 && b_b == 6 && b_s == 0 && a_b == 0) {
-        return FMT_RGB666;
-    }
-
-    return FMT_GENERIC;
-}
-
-static void render_rect_to_texture(SDL_Texture *texture, uint8_t *vram, WagnosticState *s,
-                                   int rx, int ry, int rw, int rh,
-                                   uint32_t W, uint32_t H, uint32_t BPP) {
-    if (rx < 0) { rw += rx; rx = 0; }
-    if (ry < 0) { rh += ry; ry = 0; }
-    if (rx + rw > (int)W) rw = (int)W - rx;
-    if (ry + rh > (int)H) rh = (int)H - ry;
-    if (rw <= 0 || rh <= 0) return;
-
-    SDL_Rect sdl_rect = { rx, ry, rw, rh };
-    void *pixels;
-    int pitch;
-    SDL_LockTexture(texture, &sdl_rect, &pixels, &pitch);
-
-    uint32_t r_b = 0, r_s = 0, g_b = 0, g_s = 0, b_b = 0, b_s = 0, a_b = 0, a_s = 0;
-    WagnosticPixelFormat fmt = detect_pixel_format(s, BPP, &r_b, &r_s, &g_b, &g_s, &b_b, &b_s, &a_b, &a_s);
-
-    switch (fmt) {
-        case FMT_RGBA8888_LE: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint32_t *src = (const uint32_t *)(vram + (y * W + rx) * 4);
-                memcpy(dst, src, rw * sizeof(uint32_t));
-            }
-            break;
-        }
-        case FMT_BGRA8888_LE: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint32_t *src = (const uint32_t *)(vram + (y * W + rx) * 4);
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    dst[x] = (px & 0xFF00FF00) | ((px & 0x00FF0000) >> 16) | ((px & 0x000000FF) << 16);
-                }
-            }
-            break;
-        }
-        case FMT_RGBX8888_LE: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint32_t *src = (const uint32_t *)(vram + (y * W + rx) * 4);
-                for (int x = 0; x < rw; x++) {
-                    dst[x] = 0xFF000000 | (src[x] & 0x00FFFFFF);
-                }
-            }
-            break;
-        }
-        case FMT_BGRX8888_LE: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint32_t *src = (const uint32_t *)(vram + (y * W + rx) * 4);
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    dst[x] = 0xFF000000 | (px & 0x0000FF00) | ((px & 0x00FF0000) >> 16) | ((px & 0x000000FF) << 16);
-                }
-            }
-            break;
-        }
-        case FMT_RGB888: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + (y * W + rx) * 3;
-                for (int x = 0; x < rw; x++) {
-                    dst[x] = 0xFF000000 | (src[2] << 16) | (src[1] << 8) | src[0];
-                    src += 3;
-                }
-            }
-            break;
-        }
-        case FMT_BGR888: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + (y * W + rx) * 3;
-                for (int x = 0; x < rw; x++) {
-                    dst[x] = 0xFF000000 | (src[0] << 16) | (src[1] << 8) | src[2];
-                    src += 3;
-                }
-            }
-            break;
-        }
-        case FMT_RGB565: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 11) & 0x1F; r = (r << 3) | (r >> 2);
-                    uint32_t g = (px >> 5)  & 0x3F; g = (g << 2) | (g >> 4);
-                    uint32_t b = px & 0x1F;        b = (b << 3) | (b >> 2);
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_BGR565: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t b = (px >> 11) & 0x1F; b = (b << 3) | (b >> 2);
-                    uint32_t g = (px >> 5)  & 0x3F; g = (g << 2) | (g >> 4);
-                    uint32_t r = px & 0x1F;        r = (r << 3) | (r >> 2);
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGB555: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 10) & 0x1F; r = (r << 3) | (r >> 2);
-                    uint32_t g = (px >> 5)  & 0x1F; g = (g << 3) | (g >> 2);
-                    uint32_t b = px & 0x1F;        b = (b << 3) | (b >> 2);
-                    uint32_t a = (a_b == 1 && !(px & (1 << a_s))) ? 0 : 255;
-                    dst[x] = (a << 24) | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_BGR555: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t b = (px >> 10) & 0x1F; b = (b << 3) | (b >> 2);
-                    uint32_t g = (px >> 5)  & 0x1F; g = (g << 3) | (g >> 2);
-                    uint32_t r = px & 0x1F;        r = (r << 3) | (r >> 2);
-                    uint32_t a = (a_b == 1 && !(px & (1 << a_s))) ? 0 : 255;
-                    dst[x] = (a << 24) | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGB444: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 8) & 0x0F; r = (r << 4) | r;
-                    uint32_t g = (px >> 4) & 0x0F; g = (g << 4) | g;
-                    uint32_t b = px & 0x0F;        b = (b << 4) | b;
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGBA4444: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 12) & 0x0F; r = (r << 4) | r;
-                    uint32_t g = (px >> 8)  & 0x0F; g = (g << 4) | g;
-                    uint32_t b = (px >> 4)  & 0x0F; b = (b << 4) | b;
-                    uint32_t a = px & 0x0F;         a = (a << 4) | a;
-                    dst[x] = (a << 24) | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_ARGB4444: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t a = (px >> 12) & 0x0F; a = (a << 4) | a;
-                    uint32_t r = (px >> 8)  & 0x0F; r = (r << 4) | r;
-                    uint32_t g = (px >> 4)  & 0x0F; g = (g << 4) | g;
-                    uint32_t b = px & 0x0F;         b = (b << 4) | b;
-                    dst[x] = (a << 24) | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGB333: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint16_t *src = (const uint16_t *)(vram) + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 6) & 7; r = (r << 5) | (r << 2) | (r >> 1);
-                    uint32_t g = (px >> 3) & 7; g = (g << 5) | (g << 2) | (g >> 1);
-                    uint32_t b = px & 7;        b = (b << 5) | (b << 2) | (b >> 1);
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGB332: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 5) & 7; r = (r << 5) | (r << 2) | (r >> 1);
-                    uint32_t g = (px >> 2) & 7; g = (g << 5) | (g << 2) | (g >> 1);
-                    uint32_t b = px & 3;        b = (b << 6) | (b << 4) | (b << 2) | b;
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGB222: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 4) & 3; r = (r << 6) | (r << 4) | (r << 2) | r;
-                    uint32_t g = (px >> 2) & 3; g = (g << 6) | (g << 4) | (g << 2) | g;
-                    uint32_t b = px & 3;        b = (b << 6) | (b << 4) | (b << 2) | b;
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGBA2222: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px >> 6) & 3; r = (r << 6) | (r << 4) | (r << 2) | r;
-                    uint32_t g = (px >> 4) & 3; g = (g << 6) | (g << 4) | (g << 2) | g;
-                    uint32_t b = (px >> 2) & 3; b = (b << 6) | (b << 4) | (b << 2) | b;
-                    uint32_t a = px & 3;        a = (a << 6) | (a << 4) | (a << 2) | a;
-                    dst[x] = (a << 24) | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_RGB111: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t px = src[x];
-                    uint32_t r = (px & 4) ? 255 : 0;
-                    uint32_t g = (px & 2) ? 255 : 0;
-                    uint32_t b = (px & 1) ? 255 : 0;
-                    dst[x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_GRAY8: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                const uint8_t *src = vram + y * W + rx;
-                for (int x = 0; x < rw; x++) {
-                    uint32_t lum = src[x];
-                    dst[x] = 0xFF000000 | (lum << 16) | (lum << 8) | lum;
-                }
-            }
-            break;
-        }
-        case FMT_RGB666: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                for (int x = rx; x < rx + rw; x++) {
-                    size_t idx = y * W + x;
-                    uint32_t px = (BPP == 32) ? ((uint32_t*)vram)[idx] : (vram[idx*3] | (vram[idx*3+1]<<8) | (vram[idx*3+2]<<16));
-                    uint32_t r = (px >> 12) & 0x3F; r = (r << 2) | (r >> 4);
-                    uint32_t g = (px >> 6)  & 0x3F; g = (g << 2) | (g >> 4);
-                    uint32_t b = px & 0x3F;         b = (b << 2) | (b >> 4);
-                    dst[x - rx] = 0xFF000000 | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-        case FMT_MONO1: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                for (int x = rx; x < rx + rw; x++) {
-                    size_t idx = y * W + x;
-                    uint8_t b_val = vram[idx / 8];
-                    uint8_t bit = (b_val >> (7 - (idx % 8))) & 1;
-                    dst[x - rx] = bit ? 0xFFFFFFFF : 0xFF000000;
-                }
-            }
-            break;
-        }
-        case FMT_MONO2: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                for (int x = rx; x < rx + rw; x++) {
-                    size_t idx = y * W + x;
-                    uint8_t b_val = vram[idx / 4];
-                    uint8_t val = (b_val >> (6 - (idx % 4) * 2)) & 0x03;
-                    val = (val << 6) | (val << 4) | (val << 2) | val;
-                    dst[x - rx] = 0xFF000000 | (val << 16) | (val << 8) | val;
-                }
-            }
-            break;
-        }
-        case FMT_MONO4: {
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                for (int x = rx; x < rx + rw; x++) {
-                    size_t idx = y * W + x;
-                    uint8_t b_val = vram[idx / 2];
-                    uint8_t val = (idx % 2 == 0) ? (b_val >> 4) : (b_val & 0x0F);
-                    val = (val << 4) | val;
-                    dst[x - rx] = 0xFF000000 | (val << 16) | (val << 8) | val;
-                }
-            }
-            break;
-        }
-        default: {
-            int is_grayscale = (!r_b && !g_b && !b_b && a_b);
-            for (int y = ry; y < ry + rh; y++) {
-                uint32_t *dst = (uint32_t *)((uint8_t *)pixels + (y - ry) * pitch);
-                for (int x = rx; x < rx + rw; x++) {
-                    uint64_t px = 0;
-                    size_t idx = y * W + x;
-                    if (BPP == 64) px = ((uint64_t*)vram)[idx];
-                    else if (BPP == 32) px = ((uint32_t*)vram)[idx];
-                    else if (BPP == 24) {
-                        uint8_t *p = vram + idx * 3;
-                        px = p[0] | (p[1] << 8) | (p[2] << 16);
-                    }
-                    else if (BPP == 16) px = ((uint16_t*)vram)[idx];
-                    else if (BPP == 8) px = vram[idx];
-                    else if (BPP == 4) {
-                        uint8_t b = vram[idx / 2];
-                        px = (idx % 2 == 0) ? (b >> 4) : (b & 0x0F);
-                    }
-                    else if (BPP == 2) {
-                        uint8_t b = vram[idx / 4];
-                        px = (b >> (6 - (idx % 4) * 2)) & 0x03;
-                    }
-                    else if (BPP == 1) {
-                        uint8_t b = vram[idx / 8];
-                        px = (b >> (7 - (idx % 8))) & 1;
-                    }
-
-                    uint32_t r = 0, g = 0, b = 0, a = 255;
-                    if (is_grayscale) {
-                        uint32_t lum = (uint32_t)(((px >> a_s) & ((1ULL << a_b) - 1)) * 255 / ((1ULL << a_b) - 1));
-                        r = g = b = lum;
-                        a = 255;
-                    } else {
-                        if (r_b) r = (uint32_t)(((px >> r_s) & ((1ULL << r_b) - 1)) * 255 / ((1ULL << r_b) - 1));
-                        if (g_b) g = (uint32_t)(((px >> g_s) & ((1ULL << g_b) - 1)) * 255 / ((1ULL << g_b) - 1));
-                        if (b_b) b = (uint32_t)(((px >> b_s) & ((1ULL << b_b) - 1)) * 255 / ((1ULL << b_b) - 1));
-                        if (a_b) a = (uint32_t)(((px >> a_s) & ((1ULL << a_b) - 1)) * 255 / ((1ULL << a_b) - 1));
-                    }
-                    dst[x - rx] = (a << 24) | (b << 16) | (g << 8) | r;
-                }
-            }
-            break;
-        }
-    }
-
-    SDL_UnlockTexture(texture);
-}
-
-static void render_fullscreen(SDL_Texture *texture, uint8_t *vram, WagnosticState *s,
-                              uint32_t W, uint32_t H, uint32_t BPP) {
-    render_rect_to_texture(texture, vram, s, 0, 0, W, H, W, H, BPP);
+    a->read = read_idx + frames_to_copy;
 }
 
 /* ================================================================
- * Aspect-ratio-correct letterbox
+ * Extension Dispatcher
  * ================================================================ */
 
-static void calc_letterbox(int win_w, int win_h, uint32_t W, uint32_t H,
-                           SDL_Rect *dst) {
+m3ApiRawFunction(host_wextension) {
+    m3ApiReturnType(uint32_t);
+    m3ApiGetArg(uint32_t, name_ptr);
+    m3ApiGetArg(uint32_t, version);
+
+    refresh_memory();
+    if (!g_mem || name_ptr >= g_mem_len) {
+        m3ApiReturn(0);
+    }
+
+    const char* name = (const char*)(g_mem + name_ptr);
+
+    if (strcmp(name, WSURFACE_EXTENSION) == 0 && version == WSURFACE_VERSION) {
+        if (g_surface_ptr == 0) {
+            g_surface_ptr = host_alloc(sizeof(wsurface_t), 4);
+            g_default_fb_ptr = host_alloc(640 * 480 * 4, 4);
+            g_default_dirty_ptr = host_alloc(32 * sizeof(wrect_t), 4);
+
+            wsurface_t *s = (wsurface_t*)(g_mem + g_surface_ptr);
+            s->version = 1;
+            s->size = sizeof(wsurface_t);
+            s->width = 320;
+            s->height = 240;
+            s->format = WSURFACE_RGBA8888;
+            s->stride = 320;
+            s->pixels = g_default_fb_ptr;
+            s->dirty_count = 0;
+            s->dirty_offset = g_default_dirty_ptr;
+        }
+        m3ApiReturn(g_surface_ptr);
+    }
+
+    if (strcmp(name, WCLOCK_EXTENSION) == 0 && version == WCLOCK_VERSION) {
+        if (g_clock_ptr == 0) {
+            g_clock_ptr = host_alloc(sizeof(wclock_t), 8);
+            wclock_t *c = (wclock_t*)(g_mem + g_clock_ptr);
+            c->version = 1;
+            c->size = sizeof(wclock_t);
+            c->ticks = (uint64_t)SDL_GetTicks();
+            c->frequency = 1000;
+            c->delta = 0.0166667f;
+        }
+        m3ApiReturn(g_clock_ptr);
+    }
+
+    if (strcmp(name, WKEYBOARD_EXTENSION) == 0 && version == WKEYBOARD_VERSION) {
+        if (g_keyboard_ptr == 0) {
+            g_keyboard_ptr = host_alloc(sizeof(wkeyboard_t), 4);
+            wkeyboard_t *k = (wkeyboard_t*)(g_mem + g_keyboard_ptr);
+            k->version = 1;
+            k->size = sizeof(wkeyboard_t);
+            memset(k->keys, 0, 256);
+        }
+        m3ApiReturn(g_keyboard_ptr);
+    }
+
+    if (strcmp(name, WMOUSE_EXTENSION) == 0 && version == WMOUSE_VERSION) {
+        if (g_mouse_ptr == 0) {
+            g_mouse_ptr = host_alloc(sizeof(wmouse_t), 4);
+            wmouse_t *m = (wmouse_t*)(g_mem + g_mouse_ptr);
+            m->version = 1;
+            m->size = sizeof(wmouse_t);
+            m->x = 0;
+            m->y = 0;
+            m->buttons = 0;
+            m->wheel_x = 0;
+            m->wheel_y = 0;
+        }
+        m3ApiReturn(g_mouse_ptr);
+    }
+
+    if (strcmp(name, WGAMEPAD_EXTENSION) == 0 && version == WGAMEPAD_VERSION) {
+        if (g_gamepad_ptr == 0) {
+            g_gamepad_ptr = host_alloc(sizeof(wgamepad_t), 4);
+            wgamepad_t *gp = (wgamepad_t*)(g_mem + g_gamepad_ptr);
+            gp->version = 1;
+            gp->size = sizeof(wgamepad_t);
+            gp->buttons = 0;
+            memset(gp->axes, 0, sizeof(gp->axes));
+        }
+        m3ApiReturn(g_gamepad_ptr);
+    }
+
+    if (strcmp(name, WAUDIO_EXTENSION) == 0 && version == WAUDIO_VERSION) {
+        if (g_audio_ptr == 0) {
+            g_audio_ptr = host_alloc(sizeof(waudio_t), 4);
+            g_default_audio_ptr = host_alloc(4096 * 2 * sizeof(float), 4);
+            waudio_t *a = (waudio_t*)(g_mem + g_audio_ptr);
+            a->version = 1;
+            a->size = sizeof(waudio_t);
+            a->sample_rate = 44100;
+            a->channels = 2;
+            a->format = WAUDIO_F32;
+            a->buffer = g_default_audio_ptr;
+            a->capacity = 4096;
+            a->write = 0;
+            a->read = 0;
+        }
+        m3ApiReturn(g_audio_ptr);
+    }
+
+    m3ApiReturn(0);
+}
+
+/* ================================================================
+ * Aspect-ratio-correct letterbox & Mouse coords
+ * ================================================================ */
+
+static void calc_letterbox(int win_w, int win_h, uint32_t W, uint32_t H, SDL_Rect *dst) {
     float aspect_rom = (float)W / (float)H;
     float aspect_win = (float)win_w / (float)win_h;
     if (aspect_win > aspect_rom) {
@@ -686,14 +306,11 @@ static void calc_letterbox(int win_w, int win_h, uint32_t W, uint32_t H,
     }
 }
 
-/* ================================================================
- * Mouse coordinate conversion
- * ================================================================ */
-
 static void convert_mouse_coords(int wx, int wy, int *rx, int *ry,
                                  int win_w, int win_h, uint32_t W, uint32_t H) {
     SDL_Rect dst;
     calc_letterbox(win_w, win_h, W, H, &dst);
+    if (dst.w <= 0 || dst.h <= 0) return;
     float scale_x = (float)W / (float)dst.w;
     float scale_y = (float)H / (float)dst.h;
     *rx = (int)((wx - dst.x) * scale_x);
@@ -703,81 +320,93 @@ static void convert_mouse_coords(int wx, int wy, int *rx, int *ry,
     if (*ry < 0) *ry = 0;
     if (*ry >= (int)H) *ry = (int)H - 1;
 }
+
 /* ================================================================
- * Refresh WASM memory pointer
+ * Surface Presentation
  * ================================================================ */
 
-static void refresh_memory(void) {
-    g_mem = m3_GetMemory(g_runtime, &g_mem_len, 0);
-}
-
-static SDL_Window *g_window = NULL;
-static char g_window_title[256] = "Wagnostic";
-static uint32_t g_title_wasm_ptr = 0;
-
-m3ApiRawFunction(host_wextension) {
-    m3ApiReturnType(uint32_t);
-    m3ApiGetArg(uint32_t, name_ptr);
-    m3ApiGetArg(uint32_t, data_ptr);
-
+static void render_surface(wsurface_t *s) {
+    if (!s || s->pixels == 0) return;
     refresh_memory();
-    if (!g_mem || name_ptr >= g_mem_len) {
-        m3ApiReturn(0);
+    if (!g_mem) return;
+
+    uint32_t W = s->width ? s->width : 320;
+    uint32_t H = s->height ? s->height : 240;
+    uint32_t stride = s->stride ? s->stride : W;
+    uint8_t *vram = g_mem + s->pixels;
+
+    Uint32 sdl_fmt = SDL_PIXELFORMAT_ABGR8888;
+    int bytes_per_pixel = 4;
+    if (s->format == WSURFACE_BGRA8888) {
+        sdl_fmt = SDL_PIXELFORMAT_ARGB8888;
+        bytes_per_pixel = 4;
+    } else if (s->format == WSURFACE_RGB565) {
+        sdl_fmt = SDL_PIXELFORMAT_RGB565;
+        bytes_per_pixel = 2;
+    } else if (s->format == WSURFACE_RGB888) {
+        sdl_fmt = SDL_PIXELFORMAT_RGB24;
+        bytes_per_pixel = 3;
+    } else {
+        sdl_fmt = SDL_PIXELFORMAT_ABGR8888;
+        bytes_per_pixel = 4;
     }
 
-    const char* name = (const char*)(g_mem + name_ptr);
+    if (!g_texture || g_prev_w != W || g_prev_h != H || g_prev_fmt != s->format) {
+        if (g_texture) SDL_DestroyTexture(g_texture);
+        g_texture = SDL_CreateTexture(g_renderer, sdl_fmt, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
+        SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeNearest);
+        SDL_SetTextureBlendMode(g_texture, SDL_BLENDMODE_BLEND);
+        g_prev_w = W; g_prev_h = H; g_prev_fmt = s->format;
+    }
 
-    if (strcmp(name, "title.set") == 0) {
-        if (data_ptr < g_mem_len) {
-            const char* new_title = (const char*)(g_mem + data_ptr);
-            strncpy(g_window_title, new_title, sizeof(g_window_title) - 1);
-            g_window_title[sizeof(g_window_title) - 1] = '\0';
-            g_title_wasm_ptr = data_ptr;
-            if (g_window) {
-                SDL_SetWindowTitle(g_window, g_window_title);
+    if (s->dirty_count > 0 && s->dirty_offset != 0 && s->dirty_offset + s->dirty_count * sizeof(wrect_t) <= g_mem_len) {
+        wrect_t *rects = (wrect_t*)(g_mem + s->dirty_offset);
+        uint32_t count = s->dirty_count;
+        if (count > 64) count = 64;
+        for (uint32_t i = 0; i < count; i++) {
+            int rx = rects[i].x;
+            int ry = rects[i].y;
+            int rw = rects[i].width;
+            int rh = rects[i].height;
+            if (rx < 0) { rw += rx; rx = 0; }
+            if (ry < 0) { rh += ry; ry = 0; }
+            if (rx + rw > (int)W) rw = (int)W - rx;
+            if (ry + rh > (int)H) rh = (int)H - ry;
+            if (rw <= 0 || rh <= 0) continue;
+
+            SDL_Rect r = { rx, ry, rw, rh };
+            void *pixels; int pitch;
+            if (SDL_LockTexture(g_texture, &r, &pixels, &pitch) == 0) {
+                for (int y = ry; y < ry + rh; y++) {
+                    memcpy((uint8_t*)pixels + (y - ry) * pitch,
+                           vram + (y * stride + rx) * bytes_per_pixel,
+                           rw * bytes_per_pixel);
+                }
+                SDL_UnlockTexture(g_texture);
             }
-            m3ApiReturn(data_ptr);
         }
-        m3ApiReturn(0);
+        s->dirty_count = 0;
+    } else {
+        SDL_Rect r = { 0, 0, (int)W, (int)H };
+        void *pixels; int pitch;
+        if (SDL_LockTexture(g_texture, &r, &pixels, &pitch) == 0) {
+            for (int y = 0; y < (int)H; y++) {
+                memcpy((uint8_t*)pixels + y * pitch,
+                       vram + y * stride * bytes_per_pixel,
+                       W * bytes_per_pixel);
+            }
+            SDL_UnlockTexture(g_texture);
+        }
     }
 
-    if (strcmp(name, "title.get") == 0) {
-        if (data_ptr != 0 && data_ptr < g_mem_len) {
-            char* dest = (char*)(g_mem + data_ptr);
-            strncpy(dest, g_window_title, g_mem_len - data_ptr);
-            m3ApiReturn(data_ptr);
-        }
-        m3ApiReturn(g_title_wasm_ptr);
-    }
+    int win_w, win_h;
+    SDL_GetWindowSize(g_window, &win_w, &win_h);
+    SDL_Rect dst;
+    calc_letterbox(win_w, win_h, W, H, &dst);
 
-    if (strcmp(name, "std:keyboard") == 0) {
-        if (data_ptr != 0 && data_ptr < g_mem_len) {
-            g_keyboard_wasm_ptr = data_ptr;
-        } else if (g_keyboard_wasm_ptr == 0 && g_state_ptr != 0) {
-            g_keyboard_wasm_ptr = g_state_ptr + sizeof(WagnosticState);
-        }
-        m3ApiReturn(g_keyboard_wasm_ptr);
-    }
-
-    if (strcmp(name, "std:mouse") == 0) {
-        if (data_ptr != 0 && data_ptr < g_mem_len) {
-            g_mouse_wasm_ptr = data_ptr;
-        } else if (g_mouse_wasm_ptr == 0 && g_state_ptr != 0) {
-            g_mouse_wasm_ptr = g_state_ptr + sizeof(WagnosticState) + 256;
-        }
-        m3ApiReturn(g_mouse_wasm_ptr);
-    }
-
-    if (strcmp(name, "std:gamepad") == 0) {
-        if (data_ptr != 0 && data_ptr < g_mem_len) {
-            g_gamepad_wasm_ptr = data_ptr;
-        } else if (g_gamepad_wasm_ptr == 0 && g_state_ptr != 0) {
-            g_gamepad_wasm_ptr = g_state_ptr + sizeof(WagnosticState) + 256 + 16;
-        }
-        m3ApiReturn(g_gamepad_wasm_ptr);
-    }
-
-    m3ApiReturn(0);
+    SDL_RenderClear(g_renderer);
+    SDL_RenderCopy(g_renderer, g_texture, NULL, &dst);
+    SDL_RenderPresent(g_renderer);
 }
 
 /* ================================================================
@@ -795,7 +424,7 @@ int main(int argc, char **argv) {
     /* ---- Load ROM (TAR or Raw WASM) ---- */
     uint8_t *wasm_data = NULL;
     size_t sz = 0;
-    
+
     wasm_data = tar_extract_file(g_rom_path, "main.wasm", &sz);
     if (wasm_data) {
         g_is_tar = 1;
@@ -824,7 +453,7 @@ int main(int argc, char **argv) {
     result = m3_LoadModule(g_runtime, g_module);
     if (result) { fprintf(stderr, "Load error: %s\n", result); m3_FreeRuntime(g_runtime); m3_FreeEnvironment(env); free(wasm_data); return 1; }
 
-    m3_LinkRawFunction(g_module, "env", "wextension", "i(**)", &host_wextension);
+    m3_LinkRawFunction(g_module, "env", "wextension", "i(ii)", &host_wextension);
 
     /* ---- Find wupdate ---- */
     IM3Function f_wupdate = NULL;
@@ -835,74 +464,53 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* ---- Refresh WASM memory ---- */
-    refresh_memory();
-
     /* ---- Initialize SDL ---- */
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         m3_FreeRuntime(g_runtime); m3_FreeEnvironment(env); free(wasm_data);
         return 1;
     }
 
-    /* ---- Call wupdate() once to get initial state pointer ---- */
-    {
-        m3_CallV(f_wupdate);
-        m3_GetResultsV(f_wupdate, &g_state_ptr);
-    }
-    refresh_memory();
+    uint32_t init_w = 320, init_h = 240;
 
-    WagnosticState *state = get_state();
-
-    /* ---- Read initial config ---- */
-    uint32_t W, H, BPP, SCALE;
-    read_screen_config(state, &W, &H, &BPP, &SCALE);
-
-    /* ---- Create window ---- */
-    SDL_Window *window = SDL_CreateWindow(
-        g_window_title,
+    g_window = SDL_CreateWindow(
+        "Wagnostic 2.0",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        (int)(W * SCALE), (int)(H * SCALE),
+        (int)(init_w * 2), (int)(init_h * 2),
         SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
-    if (!window) {
+    if (!g_window) {
         fprintf(stderr, "SDL_CreateWindow failed: %s\n", SDL_GetError());
         SDL_Quit(); m3_FreeRuntime(g_runtime); m3_FreeEnvironment(env); free(wasm_data);
         return 1;
     }
-    g_window = window;
 
-    SDL_Renderer *renderer = SDL_CreateRenderer(window, -1,
+    g_renderer = SDL_CreateRenderer(g_window, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    if (!renderer) renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-    if (!renderer) {
+    if (!g_renderer) g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_SOFTWARE);
+    if (!g_renderer) {
         fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
-        SDL_DestroyWindow(window); SDL_Quit();
+        SDL_DestroyWindow(g_window); SDL_Quit();
         m3_FreeRuntime(g_runtime); m3_FreeEnvironment(env); free(wasm_data);
         return 1;
     }
 
-    SDL_Texture *texture = SDL_CreateTexture(renderer,
-        SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
-        (int)W, (int)H);
-    SDL_SetTextureScaleMode(texture, SDL_ScaleModeNearest);
-    SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-
-    /* ---- Track previous config for change detection ---- */
-    uint32_t prev_W = W, prev_H = H, prev_BPP = BPP, prev_SCALE = SCALE;
     uint8_t keys_state[256];
     memset(keys_state, 0, sizeof(keys_state));
 
     uint32_t mouse_buttons = 0;
     int mouse_x = 0, mouse_y = 0;
-    int mouse_wheel = 0;
+    int mouse_wheel_x = 0, mouse_wheel_y = 0;
     uint32_t gamepad_buttons = 0;
+    int16_t gamepad_axes[8] = {0};
 
-    /* ================================================================
-     * Main loop
-     * ================================================================ */
+    uint64_t last_time = SDL_GetPerformanceCounter();
+    double perf_freq = (double)SDL_GetPerformanceFrequency();
 
     int running = 1;
     while (running) {
+        uint64_t current_time = SDL_GetPerformanceCounter();
+        float dt = (float)((double)(current_time - last_time) / perf_freq);
+        last_time = current_time;
 
         /* ---- Poll SDL events ---- */
         SDL_Event ev;
@@ -922,10 +530,12 @@ int main(int argc, char **argv) {
 
             case SDL_MOUSEMOTION: {
                 int win_w, win_h;
-                SDL_GetWindowSize(window, &win_w, &win_h);
+                SDL_GetWindowSize(g_window, &win_w, &win_h);
+                uint32_t cur_w = g_prev_w ? g_prev_w : 320;
+                uint32_t cur_h = g_prev_h ? g_prev_h : 240;
                 convert_mouse_coords(ev.motion.x, ev.motion.y,
                                      &mouse_x, &mouse_y,
-                                     win_w, win_h, W, H);
+                                     win_w, win_h, cur_w, cur_h);
                 break;
             }
 
@@ -933,15 +543,18 @@ int main(int argc, char **argv) {
             case SDL_MOUSEBUTTONUP: {
                 int pressed = (ev.type == SDL_MOUSEBUTTONDOWN);
                 if (ev.button.button == SDL_BUTTON_LEFT) {
-                    if (pressed) mouse_buttons |= 1; else mouse_buttons &= ~1u;
+                    if (pressed) mouse_buttons |= WMOUSE_BTN_LEFT; else mouse_buttons &= ~WMOUSE_BTN_LEFT;
                 } else if (ev.button.button == SDL_BUTTON_RIGHT) {
-                    if (pressed) mouse_buttons |= 2; else mouse_buttons &= ~2u;
+                    if (pressed) mouse_buttons |= WMOUSE_BTN_RIGHT; else mouse_buttons &= ~WMOUSE_BTN_RIGHT;
+                } else if (ev.button.button == SDL_BUTTON_MIDDLE) {
+                    if (pressed) mouse_buttons |= WMOUSE_BTN_MIDDLE; else mouse_buttons &= ~WMOUSE_BTN_MIDDLE;
                 }
                 break;
             }
 
             case SDL_MOUSEWHEEL:
-                mouse_wheel += ev.wheel.y;
+                mouse_wheel_x += ev.wheel.x;
+                mouse_wheel_y += ev.wheel.y;
                 break;
 
             case SDL_CONTROLLERBUTTONDOWN:
@@ -950,20 +563,20 @@ int main(int argc, char **argv) {
                 SDL_GameControllerButton btn = ev.cbutton.button;
                 uint32_t mask = 0;
                 switch (btn) {
-                    case SDL_CONTROLLER_BUTTON_A:      mask = 0x0001; break;
-                    case SDL_CONTROLLER_BUTTON_B:      mask = 0x0002; break;
-                    case SDL_CONTROLLER_BUTTON_X:      mask = 0x0004; break;
-                    case SDL_CONTROLLER_BUTTON_Y:      mask = 0x0008; break;
-                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  mask = 0x0010; break;
-                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: mask = 0x0020; break;
-                    case SDL_CONTROLLER_BUTTON_BACK:   mask = 0x0040; break;
-                    case SDL_CONTROLLER_BUTTON_START:  mask = 0x0080; break;
-                    case SDL_CONTROLLER_BUTTON_LEFTSTICK:  mask = 0x0100; break;
-                    case SDL_CONTROLLER_BUTTON_RIGHTSTICK: mask = 0x0200; break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_UP:    mask = 0x0400; break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  mask = 0x0800; break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  mask = 0x1000; break;
-                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: mask = 0x2000; break;
+                    case SDL_CONTROLLER_BUTTON_A:      mask = WGAMEPAD_BTN_A; break;
+                    case SDL_CONTROLLER_BUTTON_B:      mask = WGAMEPAD_BTN_B; break;
+                    case SDL_CONTROLLER_BUTTON_X:      mask = WGAMEPAD_BTN_X; break;
+                    case SDL_CONTROLLER_BUTTON_Y:      mask = WGAMEPAD_BTN_Y; break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  mask = WGAMEPAD_BTN_LEFTSHOULDER; break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: mask = WGAMEPAD_BTN_RIGHTSHOULDER; break;
+                    case SDL_CONTROLLER_BUTTON_BACK:   mask = WGAMEPAD_BTN_SELECT; break;
+                    case SDL_CONTROLLER_BUTTON_START:  mask = WGAMEPAD_BTN_START; break;
+                    case SDL_CONTROLLER_BUTTON_LEFTSTICK:  mask = WGAMEPAD_BTN_LEFTSTICK; break;
+                    case SDL_CONTROLLER_BUTTON_RIGHTSTICK: mask = WGAMEPAD_BTN_RIGHTSTICK; break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_UP:    mask = WGAMEPAD_BTN_DPAD_UP; break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_DOWN:  mask = WGAMEPAD_BTN_DPAD_DOWN; break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_LEFT:  mask = WGAMEPAD_BTN_DPAD_LEFT; break;
+                    case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: mask = WGAMEPAD_BTN_DPAD_RIGHT; break;
                     default: break;
                 }
                 if (mask) {
@@ -973,87 +586,92 @@ int main(int argc, char **argv) {
                 break;
             }
 
-            case SDL_WINDOWEVENT:
-                if (ev.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {}
+            case SDL_CONTROLLERAXISMOTION:
+                if (ev.caxis.axis < 8) {
+                    gamepad_axes[ev.caxis.axis] = ev.caxis.value;
+                }
                 break;
             }
         }
 
-        /* ---- Step 1: Write input to mapped peripheral buffers ---- */
+        /* ---- Update extensions input / clock before wupdate() ---- */
         refresh_memory();
         if (g_mem) {
-            if (g_keyboard_wasm_ptr != 0 && g_keyboard_wasm_ptr + 256 <= g_mem_len) {
-                memcpy(g_mem + g_keyboard_wasm_ptr, keys_state, 256);
+            if (g_clock_ptr != 0 && g_clock_ptr + sizeof(wclock_t) <= g_mem_len) {
+                wclock_t *c = (wclock_t*)(g_mem + g_clock_ptr);
+                c->ticks = (uint64_t)SDL_GetTicks();
+                c->frequency = 1000;
+                c->delta = dt;
             }
-            if (g_mouse_wasm_ptr != 0 && g_mouse_wasm_ptr + 16 <= g_mem_len) {
-                struct { int32_t x, y; uint32_t buttons; int32_t wheel; } m;
-                m.x = mouse_x; m.y = mouse_y; m.buttons = mouse_buttons; m.wheel = mouse_wheel;
-                memcpy(g_mem + g_mouse_wasm_ptr, &m, sizeof(m));
+            if (g_keyboard_ptr != 0 && g_keyboard_ptr + sizeof(wkeyboard_t) <= g_mem_len) {
+                wkeyboard_t *k = (wkeyboard_t*)(g_mem + g_keyboard_ptr);
+                memcpy(k->keys, keys_state, 256);
             }
-            if (g_gamepad_wasm_ptr != 0 && g_gamepad_wasm_ptr + 4 <= g_mem_len) {
-                memcpy(g_mem + g_gamepad_wasm_ptr, &gamepad_buttons, 4);
+            if (g_mouse_ptr != 0 && g_mouse_ptr + sizeof(wmouse_t) <= g_mem_len) {
+                wmouse_t *m = (wmouse_t*)(g_mem + g_mouse_ptr);
+                m->x = mouse_x;
+                m->y = mouse_y;
+                m->buttons = mouse_buttons;
+                m->wheel_x = mouse_wheel_x;
+                m->wheel_y = mouse_wheel_y;
+            }
+            if (g_gamepad_ptr != 0 && g_gamepad_ptr + sizeof(wgamepad_t) <= g_mem_len) {
+                wgamepad_t *gp = (wgamepad_t*)(g_mem + g_gamepad_ptr);
+                gp->buttons = gamepad_buttons;
+                memcpy(gp->axes, gamepad_axes, sizeof(gamepad_axes));
             }
         }
 
-        /* ---- Step 2: Call wupdate(), exit if return is 0 ---- */
-        {
-            int32_t keep = 0;
-            m3_CallV(f_wupdate);
-            m3_GetResultsV(f_wupdate, &keep);
-            if (!keep) break;
-            g_state_ptr = (uint32_t)keep;
+        /* ---- Step: Call wupdate() ---- */
+        int32_t status = WUPDATE_OK;
+        result = m3_CallV(f_wupdate);
+        if (result) {
+            fprintf(stderr, "wupdate() runtime error: %s\n", result);
+            break;
+        }
+        m3_GetResultsV(f_wupdate, &status);
+
+        if (status == WUPDATE_EXIT) {
+            break;
+        }
+        if (status < 0) {
+            fprintf(stderr, "wupdate() returned error code %d\n", status);
+            break;
         }
 
-        /* ---- Refresh memory pointer (ROM may have grown it) ---- */
+        /* ---- Audio Check & Initialize device if std:audio active ---- */
         refresh_memory();
-        state = get_state();
-
-
-
-        /* ---- Step 3: Read config and detect changes ---- */
-        read_screen_config(state, &W, &H, &BPP, &SCALE);
-
-        int config_changed = (W != prev_W || H != prev_H ||
-                              BPP != prev_BPP || SCALE != prev_SCALE);
-
-        if (config_changed) {
-            SDL_SetWindowSize(window, (int)(W * SCALE), (int)(H * SCALE));
-            SDL_DestroyTexture(texture);
-            texture = SDL_CreateTexture(renderer,
-                SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING,
-                (int)W, (int)H);
-            SDL_SetTextureScaleMode(texture, SDL_ScaleModeNearest);
-            SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_BLEND);
-            prev_W = W; prev_H = H; prev_BPP = BPP; prev_SCALE = SCALE;
-
-            int win_w, win_h;
-            SDL_GetWindowSize(window, &win_w, &win_h);
-            convert_mouse_coords(mouse_x, mouse_y, &mouse_x, &mouse_y,
-                                 win_w, win_h, W, H);
-        }
-
-        /* ---- Step 4: Render frame ---- */
-        if (state) {
-            uint8_t *vram = get_vram(state);
-
-            if (vram) {
-                render_fullscreen(texture, vram, state, W, H, BPP);
-
-                int win_w, win_h;
-                SDL_GetWindowSize(window, &win_w, &win_h);
-                SDL_Rect dst;
-                calc_letterbox(win_w, win_h, W, H, &dst);
-
-                SDL_RenderClear(renderer);
-                SDL_RenderCopy(renderer, texture, NULL, &dst);
-                SDL_RenderPresent(renderer);
+        if (g_mem && g_audio_ptr != 0 && g_audio_ptr + sizeof(waudio_t) <= g_mem_len) {
+            waudio_t *a = (waudio_t*)(g_mem + g_audio_ptr);
+            if (!g_audio_dev && a->sample_rate > 0 && a->channels > 0) {
+                SDL_AudioSpec wanted, have;
+                SDL_zero(wanted);
+                wanted.freq     = a->sample_rate ? a->sample_rate : 44100;
+                wanted.format   = (a->format == WAUDIO_S16) ? AUDIO_S16SYS : AUDIO_F32SYS;
+                wanted.channels = a->channels ? a->channels : 2;
+                wanted.samples  = 512;
+                wanted.callback = host_audio_callback;
+                g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted, &have, 0);
+                if (g_audio_dev) SDL_PauseAudioDevice(g_audio_dev, 0);
             }
         }
 
-        /* ---- Step 5: Reset mouse wheel ---- */
-        mouse_wheel = 0;
+        /* ---- Render Surface if std:surface active ---- */
+        if (g_mem && g_surface_ptr != 0 && g_surface_ptr + sizeof(wsurface_t) <= g_mem_len) {
+            wsurface_t *s = (wsurface_t*)(g_mem + g_surface_ptr);
+            render_surface(s);
+        }
 
-        /* ---- Yield / FPS limit (60 FPS default) ---- */
+        /* Reset relative deltas */
+        mouse_wheel_x = 0;
+        mouse_wheel_y = 0;
+        if (g_mem && g_mouse_ptr != 0 && g_mouse_ptr + sizeof(wmouse_t) <= g_mem_len) {
+            wmouse_t *m = (wmouse_t*)(g_mem + g_mouse_ptr);
+            m->wheel_x = 0;
+            m->wheel_y = 0;
+        }
+
+        /* FPS limiter (approx 60fps) */
         static uint32_t frame_start = 0;
         uint32_t now = SDL_GetTicks();
         uint32_t elapsed = now - frame_start;
@@ -1066,9 +684,10 @@ int main(int argc, char **argv) {
      * Cleanup
      * ================================================================ */
 
-    SDL_DestroyTexture(texture);
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
+    if (g_audio_dev) SDL_CloseAudioDevice(g_audio_dev);
+    if (g_texture) SDL_DestroyTexture(g_texture);
+    if (g_renderer) SDL_DestroyRenderer(g_renderer);
+    if (g_window) SDL_DestroyWindow(g_window);
     SDL_Quit();
 
     m3_FreeRuntime(g_runtime);

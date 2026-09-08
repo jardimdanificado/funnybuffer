@@ -4,26 +4,18 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <assert.h>
+
+#include "wagnostic.h"
+#include "surface.h"
+#include "clock.h"
+#include "keyboard.h"
+#include "mouse.h"
+#include "gamepad.h"
+#include "audio.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/* ================================================================
- * Wagnostic State Struct (1024 bytes ABI guarantee)
- * ================================================================ */
-
-typedef struct {
-    uint32_t width, height;
-    uint32_t r_bits, r_shift;
-    uint32_t g_bits, g_shift;
-    uint32_t b_bits, b_shift;
-    uint32_t a_bits, a_shift;
-    uint32_t vram_offset;
-} WagnosticState;
-
-static_assert(sizeof(WagnosticState) == 44, "WagnosticState must be exactly 44 bytes");
 
 /* Opaque context handle */
 typedef struct WagnosticContext WagnosticContext;
@@ -44,18 +36,22 @@ void wagnostic_destroy(WagnosticContext* ctx);
 /* Step single frame (calls wupdate). Returns 1 to continue, 0 to stop/quit/error */
 int wagnostic_step(WagnosticContext* ctx);
 
-/* Getters for linear memory objects */
-WagnosticState* wagnostic_get_state(WagnosticContext* ctx);
-uint8_t* wagnostic_get_vram(WagnosticContext* ctx);
+/* Getters for extensions in WASM linear memory */
+wsurface_t* wagnostic_get_surface(WagnosticContext* ctx);
+wclock_t* wagnostic_get_clock(WagnosticContext* ctx);
+wkeyboard_t* wagnostic_get_keyboard(WagnosticContext* ctx);
+wmouse_t* wagnostic_get_mouse(WagnosticContext* ctx);
+wgamepad_t* wagnostic_get_gamepad(WagnosticContext* ctx);
+waudio_t* wagnostic_get_audio(WagnosticContext* ctx);
 uint8_t* wagnostic_get_wasm_memory(WagnosticContext* ctx, uint32_t* out_len);
 
 /* Input manipulation */
 void wagnostic_set_key(WagnosticContext* ctx, uint8_t scancode, uint8_t is_down);
-void wagnostic_set_mouse(WagnosticContext* ctx, int32_t x, int32_t y, uint32_t buttons, int32_t wheel);
+void wagnostic_set_mouse(WagnosticContext* ctx, int32_t x, int32_t y, uint32_t buttons, int32_t wheel_x, int32_t wheel_y);
 void wagnostic_set_gamepad(WagnosticContext* ctx, uint32_t buttons);
-void wagnostic_set_ticks(WagnosticContext* ctx, uint32_t ticks_ms);
+void wagnostic_set_ticks(WagnosticContext* ctx, uint64_t ticks_ms, float dt);
 
-/* Render VRAM to raw 24-bit RGB (3 bytes/pixel) or 32-bit RGBA buffer */
+/* Render surface to raw 24-bit RGB (3 bytes/pixel) or 32-bit RGBA buffer */
 int wagnostic_render_rgb24(WagnosticContext* ctx, uint8_t* out_rgb_buffer, size_t buffer_size);
 int wagnostic_render_rgba32(WagnosticContext* ctx, uint8_t* out_rgba_buffer, size_t buffer_size);
 

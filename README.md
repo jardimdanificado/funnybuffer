@@ -62,22 +62,23 @@ int32_t wupdate(void) {
 
 ---
 
-## Standard Extensions (`std:*`)
+## Canonical Extensions
 
 | Extension | Version | Description | Header |
 |---|---|---|---|
-| `std:surface` | 1 | Display framebuffer, formats (RGBA8888, BGRA8888, RGB565, RGB888), dirty rects | `surface.h` |
-| `std:clock` | 1 | High-precision ticks, frequency, and frame delta time | `clock.h` |
-| `std:keyboard` | 1 | 256 USB HID scancode state table | `keyboard.h` |
-| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
-| `std:gamepad` | 1 | Digital gamepad buttons bitmask, 8 analog axes | `gamepad.h` |
-| `std:audio` | 1 | PCM ring buffer streaming (F32, S16), multi-channel | `audio.h` |
+| `surface` | 1 | Display framebuffer, formats (RGBA8888, BGRA8888, RGB565, RGB888), dirty rects | `surface.h` |
+| `clock` | 1 | High-precision ticks, frequency, and frame delta time | `clock.h` |
+| `keyboard` | 1 | 256 USB HID scancode state table | `keyboard.h` |
+| `mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
+| `gamepad` | 1 | Digital gamepad buttons bitmask, 8 analog axes | `gamepad.h` |
+| `audio` | 1 | PCM ring buffer streaming (F32, S16), multi-channel | `audio.h` |
+| `dispatch` | 1 | Parallel workgroups, 1D/2D compute tiles for software shaders and Wash | `dispatch.h` |
 
 ---
 
 ## Directory Structure
 
-- `include/`: Standard C headers for Wagnostic 2.0 (`wagnostic.h`, `surface.h`, `clock.h`, `keyboard.h`, `mouse.h`, `gamepad.h`, `audio.h`).
+- `include/`: Standard C headers for Wagnostic 2.0 (`wagnostic.h`, `surface.h`, `clock.h`, `keyboard.h`, `mouse.h`, `gamepad.h`, `audio.h`, `dispatch.h`).
 - `emulators/wasm3/`: Native SDL2 C host powered by WASM3.
 - `emulators/gifnostic/`: Headless CLI host with GIF exporter.
 - `emulators/node/`: Single-file Node.js SDL2 host.

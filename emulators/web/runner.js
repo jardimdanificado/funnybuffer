@@ -385,7 +385,7 @@
       env: {
         wextension: function(namePtr, version) {
           const name = readWasmString(namePtr);
-          if (name === 'std:surface' && version === 1) {
+          if ((name === 'std:surface' || name === 'surface') && version === 1) {
             if (!surfacePtr) {
               surfacePtr = hostAlloc(36, 4);
               defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
@@ -405,7 +405,7 @@
             return surfacePtr;
           }
 
-          if (name === 'std:clock' && version === 1) {
+          if ((name === 'std:clock' || name === 'clock') && version === 1) {
             if (!clockPtr) {
               clockPtr = hostAlloc(32, 8);
               const view = new DataView(wasmMemory.buffer, clockPtr, 32);
@@ -418,7 +418,7 @@
             return clockPtr;
           }
 
-          if (name === 'std:keyboard' && version === 1) {
+          if ((name === 'std:keyboard' || name === 'keyboard') && version === 1) {
             if (!keyboardPtr) {
               keyboardPtr = hostAlloc(264, 4);
               const view = new DataView(wasmMemory.buffer, keyboardPtr, 264);
@@ -429,7 +429,7 @@
             return keyboardPtr;
           }
 
-          if (name === 'std:mouse' && version === 1) {
+          if ((name === 'std:mouse' || name === 'mouse') && version === 1) {
             if (!mousePtr) {
               mousePtr = hostAlloc(28, 4);
               const view = new DataView(wasmMemory.buffer, mousePtr, 28);
@@ -444,7 +444,7 @@
             return mousePtr;
           }
 
-          if (name === 'std:gamepad' && version === 1) {
+          if ((name === 'std:gamepad' || name === 'gamepad') && version === 1) {
             if (!gamepadPtr) {
               gamepadPtr = hostAlloc(28, 4);
               const view = new DataView(wasmMemory.buffer, gamepadPtr, 28);
@@ -455,7 +455,7 @@
             return gamepadPtr;
           }
 
-          if (name === 'std:audio' && version === 1) {
+          if ((name === 'std:audio' || name === 'audio') && version === 1) {
             initAudio();
             if (!audioPtr) {
               audioPtr = hostAlloc(36, 4);
@@ -472,6 +472,29 @@
               view.setUint32(32, 0, true);
             }
             return audioPtr;
+          }
+
+          if ((name === 'std:dispatch' || name === 'wash:dispatch' || name === 'dispatch') && version === 1) {
+            if (!dispatchPtr) {
+              dispatchPtr = hostAlloc(60, 4);
+              const view = new DataView(wasmMemory.buffer, dispatchPtr, 60);
+              view.setUint32(0, 1, true);
+              view.setUint32(4, 60, true);
+              view.setUint32(8, 0, true);
+              view.setUint32(12, 1, true);
+              view.setUint32(16, 0, true);
+              view.setUint32(20, 320 * 240, true);
+              view.setUint32(24, 320 * 240, true);
+              view.setUint32(28, 0, true);
+              view.setUint32(32, 0, true);
+              view.setUint32(36, 320, true);
+              view.setUint32(40, 240, true);
+              view.setUint32(44, 320, true);
+              view.setUint32(48, 240, true);
+              view.setUint32(52, 320, true);
+              view.setUint32(56, defaultFbPtr || 0, true);
+            }
+            return dispatchPtr;
           }
 
           return 0;

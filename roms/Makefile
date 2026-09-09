@@ -18,7 +18,8 @@ ROM_DIRS = \
 	mquickjs_wagner \
 	microqjs_raw \
 	wextension_test \
-	audio_test
+	audio_test \
+	wash_shader
 
 
 WASM3_BIN ?= $(firstword $(wildcard ../build/wagnostic ../examples/wagnostic wagnostic))

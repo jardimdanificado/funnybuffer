@@ -36,6 +36,7 @@
 #include "mouse.h"
 #include "gamepad.h"
 #include "audio.h"
+#include "dispatch.h"
 
 /* ================================================================
  * Globals & State
@@ -53,6 +54,7 @@ static uint32_t g_keyboard_ptr = 0;
 static uint32_t g_mouse_ptr    = 0;
 static uint32_t g_gamepad_ptr  = 0;
 static uint32_t g_audio_ptr    = 0;
+static uint32_t g_dispatch_ptr = 0;
 
 static uint32_t g_default_fb_ptr    = 0;
 static uint32_t g_default_dirty_ptr = 0;
@@ -281,6 +283,30 @@ m3ApiRawFunction(host_wextension) {
             a->read = 0;
         }
         m3ApiReturn(g_audio_ptr);
+    }
+
+    if ((strcmp(name, WDISPATCH_EXTENSION) == 0 && version == WDISPATCH_VERSION) ||
+        (strcmp(name, WASH_DISPATCH_EXTENSION) == 0 && version == WASH_DISPATCH_VERSION)) {
+        if (g_dispatch_ptr == 0) {
+            g_dispatch_ptr = host_alloc(sizeof(wdispatch_t), 4);
+            wdispatch_t *d = (wdispatch_t*)(g_mem + g_dispatch_ptr);
+            d->version = 1;
+            d->size = sizeof(wdispatch_t);
+            d->worker_id = 0;
+            d->worker_count = 1;
+            d->global_offset = 0;
+            d->global_length = 320 * 240;
+            d->total_elements = 320 * 240;
+            d->tile_x = 0;
+            d->tile_y = 0;
+            d->tile_w = 320;
+            d->tile_h = 240;
+            d->full_w = 320;
+            d->full_h = 240;
+            d->stride = 320;
+            d->data_ptr = g_default_fb_ptr;
+        }
+        m3ApiReturn(g_dispatch_ptr);
     }
 
     m3ApiReturn(0);

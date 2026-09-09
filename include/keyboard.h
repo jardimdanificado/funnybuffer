@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define WKEYBOARD_EXTENSION "keyboard"
+#define WKEYBOARD_EXTENSION "std:keyboard"
 #define WKEYBOARD_VERSION   1
 
 typedef struct {

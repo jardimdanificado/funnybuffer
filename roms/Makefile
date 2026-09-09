@@ -15,11 +15,7 @@ ROM_DIRS = \
 	bpp4_test \
 	exotic1_test \
 	exotic2_test \
-	mquickjs_wagner \
-	microqjs_raw \
 	wextension_test \
-	audio_test \
-	wash_shader \
 	bare_counter \
 	logger_example
 

@@ -21,10 +21,11 @@ static int initialized = 0;
 
 static void set_pixel(int x, int y, uint32_t c) {
     if (!surface || !surface->pixels) return;
-    if (x >= 0 && x < (int)surface->width && y >= 0 && y < (int)surface->height) {
+    int w = (int)surface->width;
+    int h = (int)surface->height;
+    if (x >= 0 && x < w && y >= 0 && y < h) {
         uint32_t *fb = (uint32_t*)surface->pixels;
-        uint32_t stride = surface->stride ? surface->stride : surface->width;
-        fb[y * stride + x] = c;
+        fb[y * w + x] = c;
     }
 }
 
@@ -157,7 +158,6 @@ int32_t wupdate(void) {
         if (surface) {
             surface->width = 320;
             surface->height = 240;
-            surface->stride = 320;
         }
 
         initialized = 1;

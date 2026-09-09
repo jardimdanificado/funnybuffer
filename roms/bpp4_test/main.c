@@ -1,22 +1,20 @@
-// bpp4_test - 4bpp 16-color simulation
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 
 #define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
 #define RGB(r, g, b) RGBA(r, g, b, 255)
 
-static wsurface_t *surface;
+static wframebuffer_t *surface;
 static int initialized = 0;
 static uint32_t ticks = 0;
 
 int32_t wupdate(void) {
     ticks++;
     if (!initialized) {
-        surface = (wsurface_t*)wextension("std:surface", 1);
+        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
         if (surface) {
             surface->width = 320;
             surface->height = 240;
-            surface->stride = 320;
         }
         initialized = 1;
     }

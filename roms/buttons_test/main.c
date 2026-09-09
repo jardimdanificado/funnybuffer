@@ -13,12 +13,12 @@ static wmouse_t    *mouse;
 static void draw_rect(int x, int y, int w, int h, uint32_t color) {
     if (!surface || !surface->pixels) return;
     uint32_t* _fb = (uint32_t*)surface->pixels;
-    uint32_t stride = surface->stride ? surface->stride : surface->width;
+    int sw = (int)surface->width;
     for (int iy = y; iy < y + h; iy++) {
         if (iy < 0 || iy >= (int)surface->height) continue;
         for (int ix = x; ix < x + w; ix++) {
-            if (ix >= 0 && ix < (int)surface->width)
-                _fb[iy * stride + ix] = color;
+            if (ix >= 0 && ix < sw)
+                _fb[iy * sw + ix] = color;
         }
     }
 }
@@ -27,14 +27,13 @@ static int initialized = 0;
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface  = (wsurface_t*)wextension("std:surface", 1);
-        keyboard = (wkeyboard_t*)wextension("std:keyboard", 1);
-        mouse    = (wmouse_t*)wextension("std:mouse", 1);
+        surface  = (wsurface_t*)wextension("framebuffer", 1);
+        keyboard = (wkeyboard_t*)wextension("keyboard", 1);
+        mouse    = (wmouse_t*)wextension("mouse", 1);
 
         if (surface) {
             surface->width = 320;
             surface->height = 240;
-            surface->stride = 320;
         }
 
         initialized = 1;

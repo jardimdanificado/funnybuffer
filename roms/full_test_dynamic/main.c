@@ -1,17 +1,17 @@
 // full_test — Comprehensive test of Wagnostic 2.0 features
 
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 #include "clock.h"
 #include "keyboard.h"
 #include "mouse.h"
 #include "gamepad.h"
 
-static wsurface_t  *surface;
-static wclock_t    *clock_ext;
-static wkeyboard_t *keyboard;
-static wmouse_t    *mouse;
-static wgamepad_t  *gamepad;
+static wframebuffer_t *surface;
+static wclock_t       *clock_ext;
+static wkeyboard_t    *keyboard;
+static wmouse_t       *mouse;
+static wgamepad_t     *gamepad;
 
 #define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
 #define RGB(r, g, b) RGBA(r, g, b, 255)
@@ -24,10 +24,9 @@ static void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (!surface || !surface->pixels) return;
     int w = (int)surface->width;
     int h = (int)surface->height;
-    int stride = (int)(surface->stride ? surface->stride : surface->width);
     if (x < 0 || x >= w || y < 0 || y >= h) return;
 
-    int idx = y * stride + x;
+    int idx = y * w + x;
     ((uint32_t*)surface->pixels)[idx] = RGB(r, g, b);
 }
 
@@ -132,16 +131,15 @@ static void draw_mouse(int ox, int oy, int qw, int qh) {
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface   = (wsurface_t*)wextension("std:surface", 1);
-        clock_ext = (wclock_t*)wextension("std:clock", 1);
-        keyboard  = (wkeyboard_t*)wextension("std:keyboard", 1);
-        mouse     = (wmouse_t*)wextension("std:mouse", 1);
-        gamepad   = (wgamepad_t*)wextension("std:gamepad", 1);
+        surface   = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
+        clock_ext = (wclock_t*)wextension(WCLOCK_EXTENSION, WCLOCK_VERSION);
+        keyboard  = (wkeyboard_t*)wextension(WKEYBOARD_EXTENSION, WKEYBOARD_VERSION);
+        mouse     = (wmouse_t*)wextension(WMOUSE_EXTENSION, WMOUSE_VERSION);
+        gamepad   = (wgamepad_t*)wextension(WGAMEPAD_EXTENSION, WGAMEPAD_VERSION);
 
         if (surface) {
             surface->width = 320;
             surface->height = 240;
-            surface->stride = 320;
         }
 
         initialized = 1;
@@ -156,9 +154,9 @@ int32_t wupdate(void) {
     int key_r = keyboard ? keyboard->keys[21] : 0;
     if (key_r && !r_was) {
         resize_state = (resize_state + 1) % 3;
-        if (resize_state == 0) { surface->width = 320; surface->height = 240; surface->stride = 320; }
-        else if (resize_state == 1) { surface->width = 640; surface->height = 480; surface->stride = 640; }
-        else { surface->width = 160; surface->height = 120; surface->stride = 160; }
+        if (resize_state == 0) { surface->width = 320; surface->height = 240; }
+        else if (resize_state == 1) { surface->width = 640; surface->height = 480; }
+        else { surface->width = 160; surface->height = 120; }
     }
     r_was = key_r;
 

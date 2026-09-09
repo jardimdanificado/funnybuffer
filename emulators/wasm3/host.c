@@ -36,8 +36,6 @@
 #include "gif.h"
 #include "gif_encoder.h"
 #include "gamepad.h"
-#include "audio.h"
-#include "dispatch.h"
 
 /* ================================================================
  * Globals & State
@@ -55,19 +53,14 @@ static uint32_t g_keyboard_ptr = 0;
 static uint32_t g_mouse_ptr    = 0;
 static uint32_t g_gif_ptr      = 0;
 static uint32_t g_gamepad_ptr  = 0;
-static uint32_t g_audio_ptr    = 0;
-static uint32_t g_dispatch_ptr = 0;
 
-static uint32_t g_default_fb_ptr    = 0;
-static uint32_t g_default_audio_ptr = 0;
+static uint32_t g_default_fb_ptr = 0;
 
 static uint32_t g_arena_offset = 0;
 
 static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_renderer = NULL;
 static SDL_Texture  *g_texture  = NULL;
-
-static SDL_AudioDeviceID g_audio_dev = 0;
 
 static uint32_t g_prev_w = 0;
 static uint32_t g_prev_h = 0;
@@ -152,46 +145,6 @@ static uint32_t host_alloc(uint32_t size, uint32_t align) {
 }
 
 /* ================================================================
- * Audio Callback
- * ================================================================ */
-
-static void host_audio_callback(void *userdata, Uint8 *stream, int len) {
-    (void)userdata;
-    if (!g_mem || g_audio_ptr == 0) {
-        memset(stream, 0, len);
-        return;
-    }
-    waudio_t *a = (waudio_t*)(g_mem + g_audio_ptr);
-    if (!a || a->buffer == 0 || a->capacity == 0) {
-        memset(stream, 0, len);
-        return;
-    }
-
-    uint32_t channels = a->channels ? a->channels : 2;
-    uint32_t sample_size = (a->format == WAUDIO_S16) ? sizeof(int16_t) : sizeof(float);
-    uint32_t frame_size = channels * sample_size;
-    if (frame_size == 0) { memset(stream, 0, len); return; }
-
-    int wanted_frames = len / (int)frame_size;
-    uint32_t read_idx = a->read;
-    uint32_t write_idx = a->write;
-    uint32_t available = (write_idx >= read_idx) ? (write_idx - read_idx) : 0;
-    if (available > a->capacity) available = a->capacity;
-
-    int frames_to_copy = (wanted_frames < (int)available) ? wanted_frames : (int)available;
-    uint8_t *ring_buf = g_mem + a->buffer;
-
-    for (int i = 0; i < frames_to_copy; i++) {
-        uint32_t src_frame_idx = (read_idx + i) % a->capacity;
-        memcpy(stream + i * frame_size, ring_buf + src_frame_idx * frame_size, frame_size);
-    }
-    if (frames_to_copy < wanted_frames) {
-        memset(stream + frames_to_copy * frame_size, 0, (wanted_frames - frames_to_copy) * frame_size);
-    }
-    a->read = read_idx + frames_to_copy;
-}
-
-/* ================================================================
  * Extension Dispatcher
  * ================================================================ */
 
@@ -201,61 +154,57 @@ m3ApiRawFunction(host_wextension) {
     m3ApiGetArg(uint32_t, version);
 
     refresh_memory();
-    if (!g_mem || name_ptr >= g_mem_len) {
-        m3ApiReturn(0);
-    }
+    if (!g_mem || name_ptr >= g_mem_len) m3ApiReturn(0);
 
-    const char* name = (const char*)(g_mem + name_ptr);
+    const char *name = (const char*)(g_mem + name_ptr);
 
-    /* 1. Framebuffer: std:framebuffer / std:surface */
-    if ((strcmp(name, WFRAMEBUFFER_EXTENSION) == 0 ||
-         strcmp(name, "std:surface") == 0 ||
-         strcmp(name, "framebuffer") == 0 ||
-         strcmp(name, "surface") == 0) && version == WFRAMEBUFFER_VERSION) {
+    /* 1. Framebuffer: framebuffer (and legacy alias surface) */
+    if ((strcmp(name, WFRAMEBUFFER_EXTENSION) == 0 || strcmp(name, "surface") == 0 ||
+         strcmp(name, "std:framebuffer") == 0 || strcmp(name, "std:surface") == 0) && version == WFRAMEBUFFER_VERSION) {
         if (g_fb_ptr == 0) {
             g_fb_ptr = host_alloc(sizeof(wframebuffer_t), 4);
             g_default_fb_ptr = host_alloc(640 * 480 * 4, 4);
-
             wframebuffer_t *fb = (wframebuffer_t*)(g_mem + g_fb_ptr);
             fb->version = 1;
             fb->size = sizeof(wframebuffer_t);
             fb->width = 320;
             fb->height = 240;
-            fb->stride = 320;
             fb->pixels = g_default_fb_ptr;
         }
         m3ApiReturn(g_fb_ptr);
     }
 
-
-    /* 2. Clock: std:clock */
-    if ((strcmp(name, WCLOCK_EXTENSION) == 0 || strcmp(name, "clock") == 0) && version == WCLOCK_VERSION) {
+    /* 2. Clock: clock */
+    if ((strcmp(name, WCLOCK_EXTENSION) == 0 || strcmp(name, "clock") == 0 ||
+         strcmp(name, "std:clock") == 0) && version == WCLOCK_VERSION) {
         if (g_clock_ptr == 0) {
             g_clock_ptr = host_alloc(sizeof(wclock_t), 8);
-            wclock_t *c = (wclock_t*)(g_mem + g_clock_ptr);
-            c->version = 1;
-            c->size = sizeof(wclock_t);
-            c->ticks = 0;
-            c->frequency = 1000;
-            c->delta = 1.0f / (float)g_target_fps;
+            wclock_t *clk = (wclock_t*)(g_mem + g_clock_ptr);
+            clk->version = 1;
+            clk->size = sizeof(wclock_t);
+            clk->ticks = 0;
+            clk->frequency = 1000;
+            clk->delta = 0.0166667f;
         }
         m3ApiReturn(g_clock_ptr);
     }
 
-    /* 3. Keyboard: std:keyboard */
-    if ((strcmp(name, WKEYBOARD_EXTENSION) == 0 || strcmp(name, "keyboard") == 0) && version == WKEYBOARD_VERSION) {
+    /* 3. Keyboard: keyboard */
+    if ((strcmp(name, WKEYBOARD_EXTENSION) == 0 || strcmp(name, "keyboard") == 0 ||
+         strcmp(name, "std:keyboard") == 0) && version == WKEYBOARD_VERSION) {
         if (g_keyboard_ptr == 0) {
             g_keyboard_ptr = host_alloc(sizeof(wkeyboard_t), 4);
-            wkeyboard_t *k = (wkeyboard_t*)(g_mem + g_keyboard_ptr);
-            k->version = 1;
-            k->size = sizeof(wkeyboard_t);
-            memset(k->keys, 0, 256);
+            wkeyboard_t *kb = (wkeyboard_t*)(g_mem + g_keyboard_ptr);
+            kb->version = 1;
+            kb->size = sizeof(wkeyboard_t);
+            memset(kb->keys, 0, 256);
         }
         m3ApiReturn(g_keyboard_ptr);
     }
 
-    /* 4. Mouse: std:mouse */
-    if ((strcmp(name, WMOUSE_EXTENSION) == 0 || strcmp(name, "mouse") == 0) && version == WMOUSE_VERSION) {
+    /* 4. Mouse: mouse */
+    if ((strcmp(name, WMOUSE_EXTENSION) == 0 || strcmp(name, "mouse") == 0 ||
+         strcmp(name, "std:mouse") == 0) && version == WMOUSE_VERSION) {
         if (g_mouse_ptr == 0) {
             g_mouse_ptr = host_alloc(sizeof(wmouse_t), 4);
             wmouse_t *m = (wmouse_t*)(g_mem + g_mouse_ptr);
@@ -270,8 +219,9 @@ m3ApiRawFunction(host_wextension) {
         m3ApiReturn(g_mouse_ptr);
     }
 
-    /* 5. GIF: std:gif */
-    if ((strcmp(name, WGIF_EXTENSION) == 0 || strcmp(name, "gif") == 0) && version == WGIF_VERSION) {
+    /* 5. GIF Recording Extension: gif */
+    if ((strcmp(name, WGIF_EXTENSION) == 0 || strcmp(name, "gif") == 0 ||
+         strcmp(name, "std:gif") == 0) && version == WGIF_VERSION) {
         if (g_gif_ptr == 0) {
             g_gif_ptr = host_alloc(sizeof(wgif_t), 4);
             wgif_t *g = (wgif_t*)(g_mem + g_gif_ptr);
@@ -286,8 +236,9 @@ m3ApiRawFunction(host_wextension) {
         m3ApiReturn(g_gif_ptr);
     }
 
-    /* Optional legacy extensions */
-    if ((strcmp(name, WGAMEPAD_EXTENSION) == 0 || strcmp(name, "gamepad") == 0) && version == WGAMEPAD_VERSION) {
+    /* 6. Gamepad: gamepad */
+    if ((strcmp(name, WGAMEPAD_EXTENSION) == 0 || strcmp(name, "gamepad") == 0 ||
+         strcmp(name, "std:gamepad") == 0) && version == WGAMEPAD_VERSION) {
         if (g_gamepad_ptr == 0) {
             g_gamepad_ptr = host_alloc(sizeof(wgamepad_t), 4);
             wgamepad_t *gp = (wgamepad_t*)(g_mem + g_gamepad_ptr);
@@ -297,48 +248,6 @@ m3ApiRawFunction(host_wextension) {
             memset(gp->axes, 0, sizeof(gp->axes));
         }
         m3ApiReturn(g_gamepad_ptr);
-    }
-
-    if ((strcmp(name, WAUDIO_EXTENSION) == 0 || strcmp(name, "audio") == 0) && version == WAUDIO_VERSION) {
-        if (g_audio_ptr == 0) {
-            g_audio_ptr = host_alloc(sizeof(waudio_t), 4);
-            g_default_audio_ptr = host_alloc(4096 * 2 * sizeof(float), 4);
-            waudio_t *a = (waudio_t*)(g_mem + g_audio_ptr);
-            a->version = 1;
-            a->size = sizeof(waudio_t);
-            a->sample_rate = 44100;
-            a->channels = 2;
-            a->format = WAUDIO_F32;
-            a->buffer = g_default_audio_ptr;
-            a->capacity = 4096;
-            a->write = 0;
-            a->read = 0;
-        }
-        m3ApiReturn(g_audio_ptr);
-    }
-
-    if ((strcmp(name, WDISPATCH_EXTENSION) == 0 && version == WDISPATCH_VERSION) ||
-        (strcmp(name, WASH_DISPATCH_EXTENSION) == 0 && version == WASH_DISPATCH_VERSION)) {
-        if (g_dispatch_ptr == 0) {
-            g_dispatch_ptr = host_alloc(sizeof(wdispatch_t), 4);
-            wdispatch_t *d = (wdispatch_t*)(g_mem + g_dispatch_ptr);
-            d->version = 1;
-            d->size = sizeof(wdispatch_t);
-            d->worker_id = 0;
-            d->worker_count = 1;
-            d->global_offset = 0;
-            d->global_length = 320 * 240;
-            d->total_elements = 320 * 240;
-            d->tile_x = 0;
-            d->tile_y = 0;
-            d->tile_w = 320;
-            d->tile_h = 240;
-            d->full_w = 320;
-            d->full_h = 240;
-            d->stride = 320;
-            d->data_ptr = g_default_fb_ptr;
-        }
-        m3ApiReturn(g_dispatch_ptr);
     }
 
     m3ApiReturn(0);
@@ -390,13 +299,11 @@ static int render_to_rgb24(wframebuffer_t *fb, uint8_t *out_rgb) {
 
     uint32_t W = fb->width ? fb->width : 320;
     uint32_t H = fb->height ? fb->height : 240;
-    uint32_t stride = fb->stride ? fb->stride : W;
     uint32_t *vram = (uint32_t*)(g_mem + fb->pixels);
 
     for (uint32_t y = 0; y < H; y++) {
         for (uint32_t x = 0; x < W; x++) {
-            size_t src_idx = y * stride + x;
-            uint32_t px = vram[src_idx];
+            uint32_t px = vram[y * W + x];
             uint8_t r = px & 0xFF;
             uint8_t g = (px >> 8) & 0xFF;
             uint8_t b = (px >> 16) & 0xFF;
@@ -447,7 +354,6 @@ static void render_surface(wframebuffer_t *s) {
 
     uint32_t W = s->width ? s->width : 320;
     uint32_t H = s->height ? s->height : 240;
-    uint32_t stride = s->stride ? s->stride : W;
     uint8_t *vram = g_mem + s->pixels;
 
     if (!g_texture || g_prev_w != W || g_prev_h != H) {
@@ -458,20 +364,7 @@ static void render_surface(wframebuffer_t *s) {
         g_prev_w = W; g_prev_h = H;
     }
 
-    if (stride == W) {
-        SDL_UpdateTexture(g_texture, NULL, vram, W * 4);
-    } else {
-        SDL_Rect r = { 0, 0, (int)W, (int)H };
-        void *pixels; int pitch;
-        if (SDL_LockTexture(g_texture, &r, &pixels, &pitch) == 0) {
-            for (int y = 0; y < (int)H; y++) {
-                memcpy((uint8_t*)pixels + y * pitch,
-                       vram + y * stride * 4,
-                       W * 4);
-            }
-            SDL_UnlockTexture(g_texture);
-        }
-    }
+    SDL_UpdateTexture(g_texture, NULL, vram, W * 4);
 
 
     int win_w, win_h;
@@ -696,7 +589,7 @@ int main(int argc, char **argv) {
     /* ================================================================
      * GUI Mode (SDL2)
      * ================================================================ */
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         m3_FreeRuntime(g_runtime); m3_FreeEnvironment(env); free(wasm_data);
         return 1;
@@ -876,24 +769,7 @@ int main(int argc, char **argv) {
             break;
         }
 
-        /* ---- Audio Check & Initialize device if std:audio active ---- */
-        refresh_memory();
-        if (g_mem && g_audio_ptr != 0 && g_audio_ptr + sizeof(waudio_t) <= g_mem_len) {
-            waudio_t *a = (waudio_t*)(g_mem + g_audio_ptr);
-            if (!g_audio_dev && a->sample_rate > 0 && a->channels > 0) {
-                SDL_AudioSpec wanted, have;
-                SDL_zero(wanted);
-                wanted.freq     = a->sample_rate ? a->sample_rate : 44100;
-                wanted.format   = (a->format == WAUDIO_S16) ? AUDIO_S16SYS : AUDIO_F32SYS;
-                wanted.channels = a->channels ? a->channels : 2;
-                wanted.samples  = 512;
-                wanted.callback = host_audio_callback;
-                g_audio_dev = SDL_OpenAudioDevice(NULL, 0, &wanted, &have, 0);
-                if (g_audio_dev) SDL_PauseAudioDevice(g_audio_dev, 0);
-            }
-        }
-
-        /* ---- Render Framebuffer if std:framebuffer active ---- */
+        /* ---- Render Framebuffer if framebuffer active ---- */
         if (g_mem && g_fb_ptr != 0 && g_fb_ptr + sizeof(wframebuffer_t) <= g_mem_len) {
             wframebuffer_t *fb = (wframebuffer_t*)(g_mem + g_fb_ptr);
             render_surface(fb);
@@ -931,7 +807,6 @@ int main(int argc, char **argv) {
      * Cleanup
      * ================================================================ */
 
-    if (g_audio_dev) SDL_CloseAudioDevice(g_audio_dev);
     if (g_texture) SDL_DestroyTexture(g_texture);
     if (g_renderer) SDL_DestroyRenderer(g_renderer);
     if (g_window) SDL_DestroyWindow(g_window);

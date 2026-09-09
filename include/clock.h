@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define WCLOCK_EXTENSION "clock"
+#define WCLOCK_EXTENSION "std:clock"
 #define WCLOCK_VERSION   1
 
 typedef struct {

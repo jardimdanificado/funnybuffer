@@ -51,31 +51,30 @@ Wagnostic defines clean, modular extensions for common capabilities. All extensi
 
 | Extension Name | Version | Description | Header |
 |---|---|---|---|
-| `framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`), dimensions, stride | `framebuffer.h` |
-| `clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
-| `keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
-| `mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas | `mouse.h` |
-| `audio` | 1 | Ring buffer audio stream (F32/S16 interleaved channels) | `audio.h` |
-| `gif` | 1 | Headless GIF recording synchronization | `gif.h` |
+| Extension Name | Version | Description | Header |
+|---|---|---|---|
+| `std:framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`) and dimensions | `framebuffer.h` |
+| `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
+| `std:keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
+| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas | `mouse.h` |
+| `std:gif` | 1 | Headless GIF recording synchronization | `gif.h` |
 | `logger` | 1 | Simple UTF-8 text message logging to host console | `logger.h` |
-| `storage` | 1 | Persistent save-data memory region | `storage.h` |
 
 ---
 
-### 4.1 Extension `"framebuffer"` (v1) — Visual Display & Framebuffer
-- **Name:** `"framebuffer"` (also accepts legacy aliases `"surface"`, `"std:framebuffer"`, `"std:surface"`)
+### 4.1 Extension `"std:framebuffer"` (v1) — Visual Display & Framebuffer
+- **Name:** `"std:framebuffer"` (also accepts legacy alias `"framebuffer"`)
 - **Version:** `1`
-- **Total Size:** `24 bytes` | **Alignment:** `4 bytes`
+- **Total Size:** `20 bytes` | **Alignment:** `4 bytes`
 - **Pixel Format:** Strictly 32-bit RGBA8888 (`0xAABBGGRR` in Little-Endian / `[R, G, B, A]` byte order, 4 bytes per pixel).
 
 ```c
 typedef struct {
     uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 24 */
+    uint32_t size;             /* Offset  4 (4B) - Host - Always 20 */
     uint32_t width;            /* Offset  8 (4B) - Host/Guest - Framebuffer width in pixels */
     uint32_t height;           /* Offset 12 (4B) - Host/Guest - Framebuffer height in pixels */
-    uint32_t stride;           /* Offset 16 (4B) - Host/Guest - Row stride in pixels (0 = width) */
-    uint32_t pixels;           /* Offset 20 (4B) - Host/Guest - WASM pointer to 32-bit RGBA8888 pixel buffer */
+    uint32_t pixels;           /* Offset 16 (4B) - Host/Guest - WASM pointer to 32-bit RGBA8888 pixel buffer */
 } wframebuffer_t;
 ```
 
@@ -83,11 +82,10 @@ typedef struct {
 | Offset | Size | Type | Field | Written By | Description |
 | :---: | :---: | :---: | :--- | :---: | :--- |
 | `0` | 4 | `u32` | `version` | Host | Extension version (1) |
-| `4` | 4 | `u32` | `size` | Host | Struct size in bytes (24) |
+| `4` | 4 | `u32` | `size` | Host | Struct size in bytes (20) |
 | `8` | 4 | `u32` | `width` | Host/Guest | Framebuffer width in pixels |
 | `12` | 4 | `u32` | `height` | Host/Guest | Framebuffer height in pixels |
-| `16` | 4 | `u32` | `stride` | Host/Guest | Row stride in pixels (0 = width) |
-| `20` | 4 | `u32` | `pixels` | Host/Guest | WASM memory offset to 32-bit RGBA pixel buffer |
+| `16` | 4 | `u32` | `pixels` | Host/Guest | WASM memory offset to 32-bit RGBA pixel buffer |
 
 ---
 
@@ -103,43 +101,13 @@ typedef struct {
     uint64_t ticks;            /* Offset  8 (8B) - Host - Total monotonic ticks elapsed */
     uint64_t frequency;        /* Offset 16 (8B) - Host - Ticks per second (e.g. 1000 for ms) */
     float    delta;            /* Offset 24 (4B) - Host - Elapsed seconds since last frame */
-    uint32_t reserved;         /* Offset 28 (4B) - Host - Padding / alignment (0) */
-} wclock_t;
-```
-
-
-#### Field Offset Table:
-| Offset | Size | Type | Field | Written By | Description |
-| :---: | :---: | :---: | :--- | :---: | :--- |
-| `0` | 4 | `u32` | `version` | Host | Extension version (1) |
-| `4` | 4 | `u32` | `size` | Host | Struct size in bytes (32) |
-| `8` | 8 | `u64` | `ticks` | Host | Total elapsed monotonic ticks |
-| `16` | 8 | `u64` | `frequency` | Host | Ticks per second (e.g. 1000) |
-| `24` | 4 | `f32` | `delta` | Host | Delta time in seconds |
-| `28` | 4 | `u32` | `reserved` | Host | 64-bit alignment padding |
-
----
-
-### 4.2 Extension `"clock"` (v1) — High-Precision Time & Delta
-- **Name:** `"clock"`
-- **Version:** `1`
-- **Total Size:** `32 bytes` | **Alignment:** `8 bytes`
-
-```c
-typedef struct {
-    uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 32 */
-    uint64_t ticks;            /* Offset  8 (8B) - Host - Total monotonic ticks elapsed */
-    uint64_t frequency;        /* Offset 16 (8B) - Host - Ticks per second (e.g. 1000 for ms) */
-    float    delta;            /* Offset 24 (4B) - Host - Elapsed seconds since last frame */
-    uint32_t reserved;         /* Offset 28 (4B) - Host - Padding / alignment (0) */
 } wclock_t;
 ```
 
 ---
 
-### 4.3 Extension `"keyboard"` (v1) — USB HID Keyboard Table
-- **Name:** `"keyboard"`
+### 4.3 Extension `"std:keyboard"` (v1) — USB HID Keyboard Table
+- **Name:** `"std:keyboard"` (also accepts `"keyboard"`)
 - **Version:** `1`
 - **Total Size:** `264 bytes` | **Alignment:** `4 bytes`
 
@@ -153,8 +121,8 @@ typedef struct {
 
 ---
 
-### 4.4 Extension `"mouse"` (v1) — Cursor, Buttons & Scroll
-- **Name:** `"mouse"`
+### 4.4 Extension `"std:mouse"` (v1) — Cursor, Buttons & Scroll
+- **Name:** `"std:mouse"` (also accepts `"mouse"`)
 - **Version:** `1`
 - **Total Size:** `28 bytes` | **Alignment:** `4 bytes`
 
@@ -176,8 +144,8 @@ typedef struct {
 
 ---
 
-### 4.5 Extension `"gif"` (v1) — GIF Recording & Capture Synchronization
-- **Name:** `"gif"`
+### 4.5 Extension `"std:gif"` (v1) — GIF Recording & Capture Synchronization
+- **Name:** `"std:gif"` (also accepts `"gif"`)
 - **Version:** `1`
 - **Total Size:** `28 bytes` | **Alignment:** `4 bytes`
 
@@ -216,10 +184,11 @@ typedef struct {
 
 Wagnostic provides both full-featured runners and bare template hosts:
 
-1. **Bare Runners (Minimal Hosts to extend freely)**:
+1. **Bare & Minimal Runners (Zero dependencies, fully customizable)**:
    - **`examples/bare_runner.js`**: Zero-dependency bare JavaScript host (~60 lines).
    - **`examples/bare_runner.c`**: Minimal standalone C host using wasm3 (~90 lines).
-2. **Full Multimedia Runners**:
+   - **`examples/terminal_runner.js`**: Zero-dependency ANSI terminal runner (renders 32-bit RGBA directly in terminal using Unicode half-blocks).
+2. **Official Multimedia Runners**:
    - **`native` (`build/wagnostic`)**: C11 + wasm3 + SDL2 for desktop windowing & headless GIF rendering.
    - **`node` (`emulators/node/wagnostic.js`)**: Single-file Node.js host with `@kmamal/sdl`.
 
@@ -235,11 +204,10 @@ static wframebuffer_t *fb;
 
 int32_t wupdate(void) {
     if (!fb) {
-        fb = (wframebuffer_t*)wextension("framebuffer", 1);
+        fb = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
         if (fb) {
             fb->width  = 320;
             fb->height = 240;
-            fb->stride = 320;
         }
     }
 

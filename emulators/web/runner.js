@@ -215,63 +215,21 @@
 
   function renderSurface(surfaceOffset) {
     if (!wasmMemory || !surfaceOffset || !ctx) return;
-    const view = new DataView(wasmMemory.buffer, surfaceOffset, 36);
+    const view = new DataView(wasmMemory.buffer, surfaceOffset, 20);
     const width = view.getUint32(8, true) || 320;
     const height = view.getUint32(12, true) || 240;
-    const format = view.getUint32(16, true) || WSURFACE_RGBA8888;
-    const stride = view.getUint32(20, true) || width;
-    const pixelsPtr = view.getUint32(24, true);
-    const dirtyCount = view.getUint32(28, true);
-    const dirtyOffset = view.getUint32(32, true);
+    const pixelsPtr = view.getUint32(16, true);
 
     if (width !== prevWidth || height !== prevHeight) {
       resizeCanvas(width, height, 1);
     }
     if (!imageData || !pixelsPtr) return;
 
-    const u32 = new Uint32Array(imageData.data.buffer);
-    const buf = wasmMemory.buffer;
-
-    if (format === WSURFACE_RGBA8888) {
-      const v32 = new Uint32Array(buf, pixelsPtr, stride * height);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          u32[y * width + x] = v32[y * stride + x];
-        }
-      }
-    } else if (format === WSURFACE_BGRA8888) {
-      const v32 = new Uint32Array(buf, pixelsPtr, stride * height);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const px = v32[y * stride + x];
-          u32[y * width + x] = (px & 0xFF00FF00) | ((px & 0x00FF0000) >>> 16) | ((px & 0x000000FF) << 16);
-        }
-      }
-    } else if (format === WSURFACE_RGB565) {
-      const v16 = new Uint16Array(buf, pixelsPtr, stride * height);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const px = v16[y * stride + x];
-          let r = (px >>> 11) & 0x1F; r = (r << 3) | (r >>> 2);
-          let g = (px >>> 5)  & 0x3F; g = (g << 2) | (g >>> 4);
-          let b = px & 0x1F;        b = (b << 3) | (b >>> 2);
-          u32[y * width + x] = 0xFF000000 | (b << 16) | (g << 8) | r;
-        }
-      }
-    } else if (format === WSURFACE_RGB888) {
-      const v8 = new Uint8Array(buf, pixelsPtr);
-      for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-          const idx = (y * stride + x) * 3;
-          u32[y * width + x] = 0xFF000000 | (v8[idx + 2] << 16) | (v8[idx + 1] << 8) | v8[idx];
-        }
-      }
-    }
+    const u8 = new Uint8Array(imageData.data.buffer);
+    const v8 = new Uint8Array(wasmMemory.buffer, pixelsPtr, width * height * 4);
+    u8.set(v8);
 
     ctx.putImageData(imageData, 0, 0);
-    if (dirtyCount > 0) {
-      view.setUint32(28, 0, true);
-    }
   }
 
   // ── Main Loop ──────────────────────────────────────────────────────────
@@ -385,22 +343,17 @@
       env: {
         wextension: function(namePtr, version) {
           const name = readWasmString(namePtr);
-          if ((name === 'std:surface' || name === 'surface') && version === 1) {
+          if ((name === 'framebuffer' || name === 'std:surface' || name === 'surface') && version === 1) {
             if (!surfacePtr) {
-              surfacePtr = hostAlloc(36, 4);
+              surfacePtr = hostAlloc(20, 4);
               defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
-              defaultDirtyPtr = hostAlloc(32 * 8, 4);
 
-              const view = new DataView(wasmMemory.buffer, surfacePtr, 36);
+              const view = new DataView(wasmMemory.buffer, surfacePtr, 20);
               view.setUint32(0, 1, true);               // version
-              view.setUint32(4, 36, true);              // size
+              view.setUint32(4, 20, true);              // size
               view.setUint32(8, 320, true);             // width
               view.setUint32(12, 240, true);            // height
-              view.setUint32(16, WSURFACE_RGBA8888, true);// format
-              view.setUint32(20, 320, true);            // stride
-              view.setUint32(24, defaultFbPtr, true);   // pixels
-              view.setUint32(28, 0, true);              // dirty_count
-              view.setUint32(32, defaultDirtyPtr, true);// dirty_offset
+              view.setUint32(16, defaultFbPtr, true);   // pixels
             }
             return surfacePtr;
           }

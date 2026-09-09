@@ -24,10 +24,9 @@ static void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (!surface || !surface->pixels) return;
     int w = (int)surface->width;
     int h = (int)surface->height;
-    int stride = (int)(surface->stride ? surface->stride : surface->width);
     if (x < 0 || x >= w || y < 0 || y >= h) return;
 
-    int idx = y * stride + x;
+    int idx = y * w + x;
     ((uint32_t*)surface->pixels)[idx] = RGB(r, g, b);
 }
 
@@ -132,16 +131,15 @@ static void draw_mouse(int ox, int oy, int qw, int qh) {
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface   = (wsurface_t*)wextension("std:surface", 1);
-        clock_ext = (wclock_t*)wextension("std:clock", 1);
-        keyboard  = (wkeyboard_t*)wextension("std:keyboard", 1);
-        mouse     = (wmouse_t*)wextension("std:mouse", 1);
-        gamepad   = (wgamepad_t*)wextension("std:gamepad", 1);
+        surface   = (wsurface_t*)wextension("framebuffer", 1);
+        clock_ext = (wclock_t*)wextension("clock", 1);
+        keyboard  = (wkeyboard_t*)wextension("keyboard", 1);
+        mouse     = (wmouse_t*)wextension("mouse", 1);
+        gamepad   = (wgamepad_t*)wextension("gamepad", 1);
 
         if (surface) {
             surface->width = 320;
             surface->height = 240;
-            surface->stride = 320;
         }
 
         initialized = 1;
@@ -156,9 +154,9 @@ int32_t wupdate(void) {
     int key_r = keyboard ? keyboard->keys[21] : 0;
     if (key_r && !r_was) {
         resize_state = (resize_state + 1) % 3;
-        if (resize_state == 0) { surface->width = 320; surface->height = 240; surface->stride = 320; }
-        else if (resize_state == 1) { surface->width = 640; surface->height = 480; surface->stride = 640; }
-        else { surface->width = 160; surface->height = 120; surface->stride = 160; }
+        if (resize_state == 0) { surface->width = 320; surface->height = 240; }
+        else if (resize_state == 1) { surface->width = 640; surface->height = 480; }
+        else { surface->width = 160; surface->height = 120; }
     }
     r_was = key_r;
 

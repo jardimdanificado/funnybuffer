@@ -69,22 +69,9 @@ function parseArgs() {
   return { romPath, forcedScale, forcedFps, maxFrames, headless };
 }
 
-// ── Surface Render Helpers ─────────────────────────────────
-function copySurfaceRgba32(vramRaw, width, height, stride, outBuffer) {
-  if (stride === width) {
-    outBuffer.set(vramRaw.subarray(0, width * height * 4));
-  } else {
-    for (let y = 0; y < height; y++) {
-      const srcOffset = y * stride * 4;
-      const dstOffset = y * width * 4;
-      outBuffer.set(vramRaw.subarray(srcOffset, srcOffset + width * 4), dstOffset);
-    }
-  }
-}
-
 // ── Main Host Execution ───────────────────────────────────
 async function main() {
-  const { romPath, forcedScale, forcedFps } = parseArgs();
+  const { romPath, forcedScale, forcedFps, maxFrames, headless } = parseArgs();
 
   const absoluteRomPath = path.resolve(process.cwd(), romPath);
   if (!fs.existsSync(absoluteRomPath)) {
@@ -123,12 +110,11 @@ async function main() {
   let mousePtr = 0;
   let gifPtr = 0;
   let gamepadPtr = 0;
-  let audioPtr = 0;
-  let dispatchPtr = 0;
+  let loggerPtr = 0;
 
   let defaultFbPtr = 0;
   let defaultDirtyPtr = 0;
-  let defaultAudioPtr = 0;
+  let defaultLoggerBufPtr = 0;
 
   const importObject = {
     env: {
@@ -139,16 +125,15 @@ async function main() {
         // 1. Framebuffer: framebuffer / surface
         if ((name === 'framebuffer' || name === 'surface' || name === 'std:framebuffer' || name === 'std:surface') && version === 1) {
           if (!surfacePtr) {
-            surfacePtr = hostAlloc(24, 4);
+            surfacePtr = hostAlloc(20, 4);
             defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
 
-            const view = new DataView(memory.buffer, surfacePtr, 24);
+            const view = new DataView(memory.buffer, surfacePtr, 20);
             view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 24, true);              // size
+            view.setUint32(4, 20, true);              // size
             view.setUint32(8, 320, true);             // width
             view.setUint32(12, 240, true);            // height
-            view.setUint32(16, 320, true);            // stride
-            view.setUint32(20, defaultFbPtr, true);   // pixels
+            view.setUint32(16, defaultFbPtr, true);   // pixels
           }
           return surfacePtr;
         }
@@ -222,45 +207,18 @@ async function main() {
           return gamepadPtr;
         }
 
-        if ((name === 'std:audio' || name === 'audio') && version === 1) {
-          if (!audioPtr) {
-            audioPtr = hostAlloc(36, 4);
-            defaultAudioPtr = hostAlloc(4096 * 2 * 4, 4);
-            const view = new DataView(memory.buffer, audioPtr, 36);
-            view.setUint32(0, 1, true);
-            view.setUint32(4, 36, true);
-            view.setUint32(8, 44100, true);           // sample_rate
-            view.setUint32(12, 2, true);              // channels
-            view.setUint32(16, 1, true);              // format (F32)
-            view.setUint32(20, defaultAudioPtr, true);// buffer
-            view.setUint32(24, 4096, true);           // capacity
-            view.setUint32(28, 0, true);              // write
-            view.setUint32(32, 0, true);              // read
-          }
-          return audioPtr;
-        }
-
-        if ((name === 'std:dispatch' || name === 'wash:dispatch' || name === 'dispatch') && version === 1) {
-          if (!dispatchPtr) {
-            dispatchPtr = hostAlloc(60, 4);
-            const view = new DataView(memory.buffer, dispatchPtr, 60);
+        if (name === 'logger' && version === 1) {
+          if (!loggerPtr) {
+            loggerPtr = hostAlloc(20, 4);
+            defaultLoggerBufPtr = hostAlloc(1024, 4);
+            const view = new DataView(memory.buffer, loggerPtr, 20);
             view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 60, true);              // size
-            view.setUint32(8, 0, true);               // worker_id
-            view.setUint32(12, 1, true);              // worker_count
-            view.setUint32(16, 0, true);              // global_offset
-            view.setUint32(20, 320 * 240, true);      // global_length
-            view.setUint32(24, 320 * 240, true);      // total_elements
-            view.setUint32(28, 0, true);              // tile_x
-            view.setUint32(32, 0, true);              // tile_y
-            view.setUint32(36, 320, true);            // tile_w
-            view.setUint32(40, 240, true);            // tile_h
-            view.setUint32(44, 320, true);            // full_w
-            view.setUint32(48, 240, true);            // full_h
-            view.setUint32(52, 320, true);            // stride
-            view.setUint32(56, defaultFbPtr || 0, true); // data_ptr
+            view.setUint32(4, 20, true);              // size
+            view.setUint32(8, defaultLoggerBufPtr, true); // buffer
+            view.setUint32(12, 1024, true);           // capacity
+            view.setUint32(16, 0, true);              // length
           }
-          return dispatchPtr;
+          return loggerPtr;
         }
 
         return 0;
@@ -430,12 +388,11 @@ async function main() {
     mouseWheelY = 0;
 
     // Render Surface if registered
-    if (surfacePtr && surfacePtr + 24 <= memory.buffer.byteLength) {
-      const sView = new DataView(memory.buffer, surfacePtr, 24);
+    if (surfacePtr && surfacePtr + 20 <= memory.buffer.byteLength) {
+      const sView = new DataView(memory.buffer, surfacePtr, 20);
       const width = sView.getUint32(8, true) || 320;
       const height = sView.getUint32(12, true) || 240;
-      const stride = sView.getUint32(16, true) || width;
-      const pixelsPtr = sView.getUint32(20, true);
+      const pixelsPtr = sView.getUint32(16, true);
       const scale = forcedScale || 1;
 
       if (!window || currentWidth !== width || currentHeight !== height || currentScale !== scale) {
@@ -499,22 +456,10 @@ async function main() {
       }
 
       if (window && !window.destroyed && isRunning && pixelsPtr > 0) {
-        const vramRaw = new Uint8Array(memory.buffer, pixelsPtr, stride * height * 4);
-        const requiredSize = width * height * 4;
-
-        if (stride === width) {
-          try {
-            window.render(width, height, width * 4, 'rgba32', vramRaw);
-          } catch (err) {}
-        } else {
-          if (!conversionBuffer || conversionBuffer.length !== requiredSize) {
-            conversionBuffer = Buffer.alloc(requiredSize);
-          }
-          copySurfaceRgba32(vramRaw, width, height, stride, conversionBuffer);
-          try {
-            window.render(width, height, width * 4, 'rgba32', conversionBuffer);
-          } catch (err) {}
-        }
+        const vramRaw = new Uint8Array(memory.buffer, pixelsPtr, width * height * 4);
+        try {
+          window.render(width, height, width * 4, 'rgba32', vramRaw);
+        } catch (err) {}
       }
     }
 

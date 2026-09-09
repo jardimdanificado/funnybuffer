@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define WGAMEPAD_EXTENSION "std:gamepad"
+#define WGAMEPAD_EXTENSION "gamepad"
 #define WGAMEPAD_VERSION   1
 
 #define WGAMEPAD_BTN_A             (1 << 0)

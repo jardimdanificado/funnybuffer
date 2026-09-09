@@ -29,7 +29,7 @@ node wagnostic.js -n 30 ../../roms/display_test.wasm
 
 ## Architecture Overview
 
-In Wagnostic 2.0, ROMs export a single lifecycle function `wupdate()` and request capabilities via standard extensions (`std:*`):
+In Wagnostic 2.0, modules export a single lifecycle function `wupdate()` and request capabilities dynamically via named extensions:
 
 ```c
 #include "wagnostic.h"
@@ -41,8 +41,8 @@ static wclock_t       *clock_ext;
 
 int32_t wupdate(void) {
     if (!fb) {
-        fb        = (wframebuffer_t*)wextension("std:framebuffer", 1);
-        clock_ext = (wclock_t*)wextension("std:clock", 1);
+        fb        = (wframebuffer_t*)wextension("framebuffer", 1);
+        clock_ext = (wclock_t*)wextension("clock", 1);
         if (fb) {
             fb->width  = 320;
             fb->height = 240;
@@ -52,7 +52,7 @@ int32_t wupdate(void) {
 
     if (fb && fb->pixels) {
         uint32_t *pixels = (uint32_t*)fb->pixels;
-        // Draw 32-bit RGBA8888 pixels...
+        // Draw 32-bit RGBA8888 pixels (0xAABBGGRR)...
     }
 
     return WUPDATE_OK; // 0 = OK, 1 = EXIT, <0 = ERROR
@@ -61,22 +61,29 @@ int32_t wupdate(void) {
 
 ---
 
-## Canonical Standard Extensions
+## Modular Extensions
 
 | Extension Name | Version | Description | Header |
 |---|---|---|---|
-| `std:framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`), dimensions, dirty rectangles | `framebuffer.h` |
-| `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
-| `std:keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
-| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
-| `std:gif` | 1 | GIF recording status, frame count, delay, and frame capture synchronization | `gif.h` |
+| `framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`), dimensions, stride | `framebuffer.h` |
+| `clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
+| `keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
+| `mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
+| `audio` | 1 | Interleaved ring buffer audio stream (F32/S16) | `audio.h` |
+| `gif` | 1 | GIF recording status, frame count, delay, and frame capture synchronization | `gif.h` |
+| `logger` | 1 | Simple UTF-8 text message logging to host console | `logger.h` |
+| `storage` | 1 | Persistent save-data memory region | `storage.h` |
 
 ---
 
-## Official Runners
+## Runners & Templates
 
-1. **`native` (`build/wagnostic`)**: Standard C11 + wasm3 + SDL2. Supports interactive GUI, benchmarking, and headless GIF export (`-g file.gif`, `-n frames`, `--headless`).
-2. **`node` (`emulators/node/wagnostic.js`)**: Single-file host for Node.js using `@kmamal/sdl` with full GUI and headless execution modes.
+1. **Bare Runners (Zero dependencies, fully customizable)**:
+   - **`examples/bare_runner.js`**: Pure JavaScript Node.js host (~60 lines) with custom extension support.
+   - **`examples/bare_runner.c`**: Pure C host using wasm3 (~90 lines).
+2. **Official Multimedia Runners**:
+   - **`native` (`build/wagnostic`)**: Standard C11 + wasm3 + SDL2 with windowing and headless GIF export (`-g file.gif`, `-n frames`, `--headless`).
+   - **`node` (`emulators/node/wagnostic.js`)**: Single-file host for Node.js using `@kmamal/sdl`.
 
 ---
 
@@ -84,7 +91,7 @@ int32_t wupdate(void) {
 
 ```bash
 cd roms
-make test-native   # Runs all 17 test ROMs through native runner
-make test-node     # Runs all 17 test ROMs through Node.js runner
+make test-native   # Runs all 19 test ROMs through native runner
+make test-node     # Runs all 19 test ROMs through Node.js runner
 ```
 

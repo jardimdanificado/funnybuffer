@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define WGIF_EXTENSION "std:gif"
+#define WGIF_EXTENSION "gif"
 #define WGIF_VERSION   1
 
 typedef struct {

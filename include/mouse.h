@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define WMOUSE_EXTENSION "std:mouse"
+#define WMOUSE_EXTENSION "mouse"
 #define WMOUSE_VERSION   1
 
 #define WMOUSE_BTN_LEFT   (1 << 0)

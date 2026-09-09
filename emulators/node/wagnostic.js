@@ -136,22 +136,19 @@ async function main() {
       wextension: (namePtr, version) => {
         const name = readWasmString(namePtr);
 
-        // 1. Framebuffer: std:framebuffer / std:surface
-        if ((name === 'std:framebuffer' || name === 'std:surface' || name === 'framebuffer' || name === 'surface') && version === 1) {
+        // 1. Framebuffer: framebuffer / surface
+        if ((name === 'framebuffer' || name === 'surface' || name === 'std:framebuffer' || name === 'std:surface') && version === 1) {
           if (!surfacePtr) {
-            surfacePtr = hostAlloc(32, 4);
+            surfacePtr = hostAlloc(24, 4);
             defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
-            defaultDirtyPtr = hostAlloc(32 * 16, 4);
 
-            const view = new DataView(memory.buffer, surfacePtr, 32);
+            const view = new DataView(memory.buffer, surfacePtr, 24);
             view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 32, true);              // size
+            view.setUint32(4, 24, true);              // size
             view.setUint32(8, 320, true);             // width
             view.setUint32(12, 240, true);            // height
             view.setUint32(16, 320, true);            // stride
             view.setUint32(20, defaultFbPtr, true);   // pixels
-            view.setUint32(24, 0, true);              // dirty_count
-            view.setUint32(28, defaultDirtyPtr, true);// dirty_offset
           }
           return surfacePtr;
         }
@@ -433,8 +430,8 @@ async function main() {
     mouseWheelY = 0;
 
     // Render Surface if registered
-    if (surfacePtr && surfacePtr + 32 <= memory.buffer.byteLength) {
-      const sView = new DataView(memory.buffer, surfacePtr, 32);
+    if (surfacePtr && surfacePtr + 24 <= memory.buffer.byteLength) {
+      const sView = new DataView(memory.buffer, surfacePtr, 24);
       const width = sView.getUint32(8, true) || 320;
       const height = sView.getUint32(12, true) || 240;
       const stride = sView.getUint32(16, true) || width;

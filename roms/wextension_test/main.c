@@ -19,18 +19,18 @@ static int test_passed = 0;
 
 int32_t wupdate(void) {
     if (!initialized) {
-        // Test 1: Discover standard 5 extensions
-        framebuffer = (wframebuffer_t*)wextension("std:framebuffer", 1);
-        clock_ext   = (wclock_t*)wextension("std:clock", 1);
-        keyboard    = (wkeyboard_t*)wextension("std:keyboard", 1);
-        mouse       = (wmouse_t*)wextension("std:mouse", 1);
-        gif         = (wgif_t*)wextension("std:gif", 1);
+        // Test 1: Discover extensions via direct names
+        framebuffer = (wframebuffer_t*)wextension("framebuffer", 1);
+        clock_ext   = (wclock_t*)wextension("clock", 1);
+        keyboard    = (wkeyboard_t*)wextension("keyboard", 1);
+        mouse       = (wmouse_t*)wextension("mouse", 1);
+        gif         = (wgif_t*)wextension("gif", 1);
 
         // Test 2: Unknown extension returns NULL
-        void* unk = wextension("unknown:custom", 1);
+        void* unk = wextension("unknown_custom_xyz", 1);
 
         // Test 3: Unsupported version returns NULL
-        void* inv_ver = wextension("std:framebuffer", 999);
+        void* inv_ver = wextension("framebuffer", 999);
 
         // Test 4: Legacy alias std:surface also works
         void* surf_alias = wextension("std:surface", 1);

@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#define WAUDIO_EXTENSION "std:audio"
+#define WAUDIO_EXTENSION "audio"
 #define WAUDIO_VERSION   1
 
 #define WAUDIO_F32  1

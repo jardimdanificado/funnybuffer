@@ -59,7 +59,6 @@ static uint32_t g_audio_ptr    = 0;
 static uint32_t g_dispatch_ptr = 0;
 
 static uint32_t g_default_fb_ptr    = 0;
-static uint32_t g_default_dirty_ptr = 0;
 static uint32_t g_default_audio_ptr = 0;
 
 static uint32_t g_arena_offset = 0;
@@ -216,7 +215,6 @@ m3ApiRawFunction(host_wextension) {
         if (g_fb_ptr == 0) {
             g_fb_ptr = host_alloc(sizeof(wframebuffer_t), 4);
             g_default_fb_ptr = host_alloc(640 * 480 * 4, 4);
-            g_default_dirty_ptr = host_alloc(32 * sizeof(wrect_t), 4);
 
             wframebuffer_t *fb = (wframebuffer_t*)(g_mem + g_fb_ptr);
             fb->version = 1;
@@ -225,8 +223,6 @@ m3ApiRawFunction(host_wextension) {
             fb->height = 240;
             fb->stride = 320;
             fb->pixels = g_default_fb_ptr;
-            fb->dirty_count = 0;
-            fb->dirty_offset = g_default_dirty_ptr;
         }
         m3ApiReturn(g_fb_ptr);
     }
@@ -462,33 +458,8 @@ static void render_surface(wframebuffer_t *s) {
         g_prev_w = W; g_prev_h = H;
     }
 
-    if (s->dirty_count > 0 && s->dirty_offset != 0 && s->dirty_offset + s->dirty_count * sizeof(wrect_t) <= g_mem_len) {
-        wrect_t *rects = (wrect_t*)(g_mem + s->dirty_offset);
-        uint32_t count = s->dirty_count;
-        if (count > 64) count = 64;
-        for (uint32_t i = 0; i < count; i++) {
-            int rx = rects[i].x;
-            int ry = rects[i].y;
-            uint32_t rw = rects[i].w;
-            uint32_t rh = rects[i].h;
-            if (rx < 0) { rw = (rw > (uint32_t)(-rx)) ? (rw + rx) : 0; rx = 0; }
-            if (ry < 0) { rh = (rh > (uint32_t)(-ry)) ? (rh + ry) : 0; ry = 0; }
-            if (rx + rw > W) rw = (W > (uint32_t)rx) ? (W - rx) : 0;
-            if (ry + rh > H) rh = (H > (uint32_t)ry) ? (H - ry) : 0;
-            if (rw == 0 || rh == 0) continue;
-
-            SDL_Rect r = { rx, ry, (int)rw, (int)rh };
-            void *pixels; int pitch;
-            if (SDL_LockTexture(g_texture, &r, &pixels, &pitch) == 0) {
-                for (int y = ry; y < ry + (int)rh; y++) {
-                    memcpy((uint8_t*)pixels + (y - ry) * pitch,
-                           vram + (y * stride + rx) * 4,
-                           rw * 4);
-                }
-                SDL_UnlockTexture(g_texture);
-            }
-        }
-        s->dirty_count = 0;
+    if (stride == W) {
+        SDL_UpdateTexture(g_texture, NULL, vram, W * 4);
     } else {
         SDL_Rect r = { 0, 0, (int)W, (int)H };
         void *pixels; int pitch;

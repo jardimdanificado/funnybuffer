@@ -2,6 +2,9 @@
 #include "wagnostic.h"
 #include "surface.h"
 
+#define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
+#define RGB(r, g, b) RGBA(r, g, b, 255)
+
 static wsurface_t *surface;
 static int initialized = 0;
 static uint32_t ticks = 0;
@@ -14,15 +17,14 @@ int32_t wupdate(void) {
             surface->width = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_RGB565;
         }
         initialized = 1;
     }
 
     if (!surface || !surface->pixels) return WUPDATE_ERROR;
 
-    uint16_t *fb = (uint16_t*)surface->pixels;
-    static const uint16_t palette[4] = { 0x0000, 0x52AA, 0xAD55, 0xFFFF };
+    uint32_t *fb = (uint32_t*)surface->pixels;
+    static const uint32_t palette[4] = { RGB(0,0,0), RGB(85,85,85), RGB(170,170,170), RGB(255,255,255) };
 
     for (int y = 0; y < 240; y++) {
         for (int x = 0; x < 320; x++) {

@@ -1607,7 +1607,6 @@ int32_t wupdate(void) {
             _wagner_surface_ptr->width  = WAGNER_CFG_W;
             _wagner_surface_ptr->height = WAGNER_CFG_H;
             _wagner_surface_ptr->stride = WAGNER_CFG_W;
-            _wagner_surface_ptr->format = (WAGNER_CFG_BPP == 32) ? WSURFACE_RGBA8888 : ((WAGNER_CFG_BPP == 24) ? WSURFACE_RGB888 : WSURFACE_RGB565);
             _wagner_surface_ptr->pixels = (uint32_t)_wagner_rom.vram;
         }
 

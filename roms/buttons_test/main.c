@@ -7,11 +7,12 @@ static wsurface_t  *surface;
 static wkeyboard_t *keyboard;
 static wmouse_t    *mouse;
 
-#define W_RGB565(r, g, b) (uint16_t)((((r) & 0xF8) << 8) | (((g) & 0xFC) << 3) | ((b) >> 3))
+#define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
+#define RGB(r, g, b) RGBA(r, g, b, 255)
 
-static void draw_rect(int x, int y, int w, int h, uint16_t color) {
+static void draw_rect(int x, int y, int w, int h, uint32_t color) {
     if (!surface || !surface->pixels) return;
-    uint16_t* _fb = (uint16_t*)surface->pixels;
+    uint32_t* _fb = (uint32_t*)surface->pixels;
     uint32_t stride = surface->stride ? surface->stride : surface->width;
     for (int iy = y; iy < y + h; iy++) {
         if (iy < 0 || iy >= (int)surface->height) continue;
@@ -34,7 +35,6 @@ int32_t wupdate(void) {
             surface->width = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_RGB565;
         }
 
         initialized = 1;
@@ -42,8 +42,8 @@ int32_t wupdate(void) {
 
     if (!surface || !surface->pixels) return WUPDATE_ERROR;
 
-    uint16_t* _fb = (uint16_t*)surface->pixels;
-    for (int i = 0; i < 320 * 240; i++) _fb[i] = W_RGB565(51, 51, 51);
+    uint32_t* _fb = (uint32_t*)surface->pixels;
+    for (int i = 0; i < 320 * 240; i++) _fb[i] = RGB(51, 51, 51);
 
     int cols = 16, rows = 16, cell_w = 16, cell_h = 10;
     int margin_x = (320 - (cols * cell_w)) / 2;
@@ -52,8 +52,8 @@ int32_t wupdate(void) {
     for (int i = 0; i < 256; i++) {
         int cx = i % cols, cy = i / cols;
         int px = margin_x + cx * cell_w, py = margin_y + cy * cell_h;
-        uint16_t col = W_RGB565(119, 119, 119);
-        if (keyboard && keyboard->keys[i]) col = W_RGB565(0, 204, 85);
+        uint32_t col = RGB(119, 119, 119);
+        if (keyboard && keyboard->keys[i]) col = RGB(0, 204, 85);
         draw_rect(px, py, cell_w - 1, cell_h - 1, col);
     }
 
@@ -61,8 +61,8 @@ int32_t wupdate(void) {
     int my = mouse ? mouse->y : 0;
     uint32_t mbtns = mouse ? mouse->buttons : 0;
 
-    draw_rect(mx - 2, my - 2, 5, 5, W_RGB565(255, 255, 255));
-    if (mbtns & WMOUSE_BTN_LEFT) draw_rect(mx - 4, my - 4, 9, 9, W_RGB565(255, 0, 0));
+    draw_rect(mx - 2, my - 2, 5, 5, RGB(255, 255, 255));
+    if (mbtns & WMOUSE_BTN_LEFT) draw_rect(mx - 4, my - 4, 9, 9, RGB(255, 0, 0));
 
     return WUPDATE_OK;
 }

@@ -37,7 +37,6 @@ int32_t wupdate(void) {
             surface->width  = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_RGBA8888;
         }
 
         initialized = 1;

@@ -1,6 +1,9 @@
-// exotic2_test - Tests WSURFACE_BGRA8888 32-bit surface
+// exotic2_test - Color gradient pattern test
 #include "wagnostic.h"
 #include "surface.h"
+
+#define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
+#define RGB(r, g, b) RGBA(r, g, b, 255)
 
 static wsurface_t *surface;
 static int initialized = 0;
@@ -14,7 +17,6 @@ int32_t wupdate(void) {
             surface->width = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_BGRA8888;
         }
         initialized = 1;
     }
@@ -28,8 +30,7 @@ int32_t wupdate(void) {
             uint8_t r = (uint8_t)(x * 255 / 320);
             uint8_t g = (uint8_t)(y * 255 / 240);
             uint8_t b = (uint8_t)((ticks * 3) & 0xFF);
-            // BGRA: B in low byte, R in 3rd byte
-            fb[y * 320 + x] = 0xFF000000 | (r << 16) | (g << 8) | b;
+            fb[y * 320 + x] = RGB(r, g, b);
         }
     }
 

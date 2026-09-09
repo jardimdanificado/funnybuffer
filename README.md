@@ -4,25 +4,25 @@ Minimalist, modular, platform-agnostic WebAssembly multimedia runtime.
 
 ## Quick Start
 
+### 1. Native Runner (C + wasm3 + SDL2)
+Interactive Window:
 ```bash
 mkdir -p build && cd build && cmake .. && cmake --build .
-./wagnostic ../roms/audio_test.wasm
+./wagnostic ../roms/display_test.wasm
 ```
 
-Headless GIF recording & testing:
+Headless Execution & GIF Export:
 ```bash
-./gifnostic -n 60 -g output.gif ../roms/display_test.wasm
+./wagnostic -g output.gif -n 60 ../roms/display_test.wasm
 ```
 
-Single-file Node.js host:
+### 2. Node.js Runner
+Interactive or Headless:
 ```bash
 cd emulators/node && npm install
-node wagnostic.js ../../roms/input_test.wasm
-```
-
-Web runner:
-```bash
-# Open emulators/web/index.html in any modern browser
+node wagnostic.js ../../roms/display_test.wasm
+# Headless run:
+node wagnostic.js -n 30 ../../roms/display_test.wasm
 ```
 
 ---
@@ -33,27 +33,26 @@ In Wagnostic 2.0, ROMs export a single lifecycle function `wupdate()` and reques
 
 ```c
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 #include "clock.h"
 
-static wsurface_t *surface;
-static wclock_t   *clock_ext;
+static wframebuffer_t *fb;
+static wclock_t       *clock_ext;
 
 int32_t wupdate(void) {
-    if (!surface) {
-        surface   = (wsurface_t*)wextension("std:surface", 1);
+    if (!fb) {
+        fb        = (wframebuffer_t*)wextension("std:framebuffer", 1);
         clock_ext = (wclock_t*)wextension("std:clock", 1);
-        if (surface) {
-            surface->width  = 320;
-            surface->height = 240;
-            surface->stride = 320;
-            surface->format = WSURFACE_RGBA8888;
+        if (fb) {
+            fb->width  = 320;
+            fb->height = 240;
+            fb->stride = 320;
         }
     }
 
-    if (surface && surface->pixels) {
-        uint32_t *fb = (uint32_t*)surface->pixels;
-        // Draw frame...
+    if (fb && fb->pixels) {
+        uint32_t *pixels = (uint32_t*)fb->pixels;
+        // Draw 32-bit RGBA8888 pixels...
     }
 
     return WUPDATE_OK; // 0 = OK, 1 = EXIT, <0 = ERROR
@@ -62,26 +61,30 @@ int32_t wupdate(void) {
 
 ---
 
-## Canonical Extensions
+## Canonical Standard Extensions
 
-| Extension | Version | Description | Header |
+| Extension Name | Version | Description | Header |
 |---|---|---|---|
-| `surface` | 1 | Display framebuffer, formats (RGBA8888, BGRA8888, RGB565, RGB888), dirty rects | `surface.h` |
-| `clock` | 1 | High-precision ticks, frequency, and frame delta time | `clock.h` |
-| `keyboard` | 1 | 256 USB HID scancode state table | `keyboard.h` |
-| `mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
-| `gamepad` | 1 | Digital gamepad buttons bitmask, 8 analog axes | `gamepad.h` |
-| `audio` | 1 | PCM ring buffer streaming (F32, S16), multi-channel | `audio.h` |
-| `dispatch` | 1 | Parallel workgroups, 1D/2D compute tiles for software shaders and Wash | `dispatch.h` |
+| `std:framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`), dimensions, dirty rectangles | `framebuffer.h` |
+| `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
+| `std:keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
+| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
+| `std:gif` | 1 | GIF recording status, frame count, delay, and frame capture synchronization | `gif.h` |
 
 ---
 
-## Directory Structure
+## Official Runners
 
-- `include/`: Standard C headers for Wagnostic 2.0 (`wagnostic.h`, `surface.h`, `clock.h`, `keyboard.h`, `mouse.h`, `gamepad.h`, `audio.h`, `dispatch.h`).
-- `emulators/wasm3/`: Native SDL2 C host powered by WASM3.
-- `emulators/gifnostic/`: Headless CLI host with GIF exporter.
-- `emulators/node/`: Single-file Node.js SDL2 host.
-- `emulators/web/`: Web host runner with HTML5 Canvas, Web Audio, Gamepad API, and full TAR bundle support.
-- `roms/`: Test ROMs and demos (e.g. `audio_test`, `display_test`, `input_test`, `buttons_test`, `mquickjs_wagner`, `wextension_test`).
-- `ABI.md`: Full specification for the Wagnostic 2.0 ABI.
+1. **`native` (`build/wagnostic`)**: Standard C11 + wasm3 + SDL2. Supports interactive GUI, benchmarking, and headless GIF export (`-g file.gif`, `-n frames`, `--headless`).
+2. **`node` (`emulators/node/wagnostic.js`)**: Single-file host for Node.js using `@kmamal/sdl` with full GUI and headless execution modes.
+
+---
+
+## Running Test Suite
+
+```bash
+cd roms
+make test-native   # Runs all 17 test ROMs through native runner
+make test-node     # Runs all 17 test ROMs through Node.js runner
+```
+

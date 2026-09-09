@@ -1,17 +1,16 @@
 /*
- * Wagnostic 2.0 Reference Emulator — wasm3 + SDL2 host
+ * Wagnostic 2.0 Reference Native Emulator — wasm3 + SDL2 / Headless GIF host
  *
  * Implements the Wagnostic 2.0 ABI:
  * - Exports: wupdate() -> int32_t (WUPDATE_OK, WUPDATE_EXIT, WUPDATE_ERROR)
  * - Imports: env.wextension(const char *name, uint32_t version) -> void*
  *
  * Standard Extensions:
- * - std:surface  (v1)
- * - std:clock    (v1)
- * - std:keyboard (v1)
- * - std:mouse    (v1)
- * - std:gamepad  (v1)
- * - std:audio    (v1)
+ * - std:framebuffer (v1)
+ * - std:clock       (v1)
+ * - std:keyboard    (v1)
+ * - std:mouse       (v1)
+ * - std:gif         (v1)
  */
 
 #include <stdio.h>
@@ -30,10 +29,12 @@
 #include "m3_api_libc.h"
 
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 #include "clock.h"
 #include "keyboard.h"
 #include "mouse.h"
+#include "gif.h"
+#include "gif_encoder.h"
 #include "gamepad.h"
 #include "audio.h"
 #include "dispatch.h"
@@ -48,10 +49,11 @@ static IM3Runtime g_runtime = NULL;
 static uint8_t *g_mem     = NULL;
 static uint32_t g_mem_len = 0;
 
-static uint32_t g_surface_ptr  = 0;
+static uint32_t g_fb_ptr       = 0;
 static uint32_t g_clock_ptr    = 0;
 static uint32_t g_keyboard_ptr = 0;
 static uint32_t g_mouse_ptr    = 0;
+static uint32_t g_gif_ptr      = 0;
 static uint32_t g_gamepad_ptr  = 0;
 static uint32_t g_audio_ptr    = 0;
 static uint32_t g_dispatch_ptr = 0;
@@ -66,12 +68,23 @@ static SDL_Window   *g_window   = NULL;
 static SDL_Renderer *g_renderer = NULL;
 static SDL_Texture  *g_texture  = NULL;
 
-static SDL_AudioDeviceID g_audio_dev   = 0;
-static SDL_mutex        *g_audio_mutex = NULL;
+static SDL_AudioDeviceID g_audio_dev = 0;
 
 static uint32_t g_prev_w = 0;
 static uint32_t g_prev_h = 0;
 static uint32_t g_prev_fmt = 0;
+
+static const char *g_gif_path = NULL;
+static GIFEncoder *g_gif_encoder = NULL;
+static uint8_t    *g_gif_rgb_buf = NULL;
+static size_t      g_gif_rgb_buf_sz = 0;
+static uint64_t    g_max_frames = 0;
+static uint32_t    g_frame_skip = 0;
+static uint16_t    g_delay_cs = 2;
+static uint32_t    g_target_fps = 60;
+static uint32_t    g_captured_frames = 0;
+static int         g_headless = 0;
+static int         g_benchmark = 0;
 
 static int g_is_tar = 0;
 static char g_rom_path[1024] = {0};
@@ -124,7 +137,6 @@ static void refresh_memory(void) {
 static uint32_t host_alloc(uint32_t size, uint32_t align) {
     refresh_memory();
     if (g_arena_offset == 0) {
-        /* Allocate from safe zone in WASM memory */
         g_arena_offset = (g_mem_len > 1048576) ? 0x20000 : 0x8000;
     }
     if (align > 1) {
@@ -196,40 +208,46 @@ m3ApiRawFunction(host_wextension) {
 
     const char* name = (const char*)(g_mem + name_ptr);
 
-    if (strcmp(name, WSURFACE_EXTENSION) == 0 && version == WSURFACE_VERSION) {
-        if (g_surface_ptr == 0) {
-            g_surface_ptr = host_alloc(sizeof(wsurface_t), 4);
+    /* 1. Framebuffer: std:framebuffer / std:surface */
+    if ((strcmp(name, WFRAMEBUFFER_EXTENSION) == 0 ||
+         strcmp(name, "std:surface") == 0 ||
+         strcmp(name, "framebuffer") == 0 ||
+         strcmp(name, "surface") == 0) && version == WFRAMEBUFFER_VERSION) {
+        if (g_fb_ptr == 0) {
+            g_fb_ptr = host_alloc(sizeof(wframebuffer_t), 4);
             g_default_fb_ptr = host_alloc(640 * 480 * 4, 4);
             g_default_dirty_ptr = host_alloc(32 * sizeof(wrect_t), 4);
 
-            wsurface_t *s = (wsurface_t*)(g_mem + g_surface_ptr);
-            s->version = 1;
-            s->size = sizeof(wsurface_t);
-            s->width = 320;
-            s->height = 240;
-            s->format = WSURFACE_RGBA8888;
-            s->stride = 320;
-            s->pixels = g_default_fb_ptr;
-            s->dirty_count = 0;
-            s->dirty_offset = g_default_dirty_ptr;
+            wframebuffer_t *fb = (wframebuffer_t*)(g_mem + g_fb_ptr);
+            fb->version = 1;
+            fb->size = sizeof(wframebuffer_t);
+            fb->width = 320;
+            fb->height = 240;
+            fb->stride = 320;
+            fb->pixels = g_default_fb_ptr;
+            fb->dirty_count = 0;
+            fb->dirty_offset = g_default_dirty_ptr;
         }
-        m3ApiReturn(g_surface_ptr);
+        m3ApiReturn(g_fb_ptr);
     }
 
-    if (strcmp(name, WCLOCK_EXTENSION) == 0 && version == WCLOCK_VERSION) {
+
+    /* 2. Clock: std:clock */
+    if ((strcmp(name, WCLOCK_EXTENSION) == 0 || strcmp(name, "clock") == 0) && version == WCLOCK_VERSION) {
         if (g_clock_ptr == 0) {
             g_clock_ptr = host_alloc(sizeof(wclock_t), 8);
             wclock_t *c = (wclock_t*)(g_mem + g_clock_ptr);
             c->version = 1;
             c->size = sizeof(wclock_t);
-            c->ticks = (uint64_t)SDL_GetTicks();
+            c->ticks = 0;
             c->frequency = 1000;
-            c->delta = 0.0166667f;
+            c->delta = 1.0f / (float)g_target_fps;
         }
         m3ApiReturn(g_clock_ptr);
     }
 
-    if (strcmp(name, WKEYBOARD_EXTENSION) == 0 && version == WKEYBOARD_VERSION) {
+    /* 3. Keyboard: std:keyboard */
+    if ((strcmp(name, WKEYBOARD_EXTENSION) == 0 || strcmp(name, "keyboard") == 0) && version == WKEYBOARD_VERSION) {
         if (g_keyboard_ptr == 0) {
             g_keyboard_ptr = host_alloc(sizeof(wkeyboard_t), 4);
             wkeyboard_t *k = (wkeyboard_t*)(g_mem + g_keyboard_ptr);
@@ -240,7 +258,8 @@ m3ApiRawFunction(host_wextension) {
         m3ApiReturn(g_keyboard_ptr);
     }
 
-    if (strcmp(name, WMOUSE_EXTENSION) == 0 && version == WMOUSE_VERSION) {
+    /* 4. Mouse: std:mouse */
+    if ((strcmp(name, WMOUSE_EXTENSION) == 0 || strcmp(name, "mouse") == 0) && version == WMOUSE_VERSION) {
         if (g_mouse_ptr == 0) {
             g_mouse_ptr = host_alloc(sizeof(wmouse_t), 4);
             wmouse_t *m = (wmouse_t*)(g_mem + g_mouse_ptr);
@@ -255,7 +274,24 @@ m3ApiRawFunction(host_wextension) {
         m3ApiReturn(g_mouse_ptr);
     }
 
-    if (strcmp(name, WGAMEPAD_EXTENSION) == 0 && version == WGAMEPAD_VERSION) {
+    /* 5. GIF: std:gif */
+    if ((strcmp(name, WGIF_EXTENSION) == 0 || strcmp(name, "gif") == 0) && version == WGIF_VERSION) {
+        if (g_gif_ptr == 0) {
+            g_gif_ptr = host_alloc(sizeof(wgif_t), 4);
+            wgif_t *g = (wgif_t*)(g_mem + g_gif_ptr);
+            g->version = 1;
+            g->size = sizeof(wgif_t);
+            g->recording = (g_gif_path != NULL) ? 1 : 0;
+            g->frame_count = 0;
+            g->max_frames = (uint32_t)g_max_frames;
+            g->delay_cs = g_delay_cs;
+            g->save_trigger = 0;
+        }
+        m3ApiReturn(g_gif_ptr);
+    }
+
+    /* Optional legacy extensions */
+    if ((strcmp(name, WGAMEPAD_EXTENSION) == 0 || strcmp(name, "gamepad") == 0) && version == WGAMEPAD_VERSION) {
         if (g_gamepad_ptr == 0) {
             g_gamepad_ptr = host_alloc(sizeof(wgamepad_t), 4);
             wgamepad_t *gp = (wgamepad_t*)(g_mem + g_gamepad_ptr);
@@ -267,7 +303,7 @@ m3ApiRawFunction(host_wextension) {
         m3ApiReturn(g_gamepad_ptr);
     }
 
-    if (strcmp(name, WAUDIO_EXTENSION) == 0 && version == WAUDIO_VERSION) {
+    if ((strcmp(name, WAUDIO_EXTENSION) == 0 || strcmp(name, "audio") == 0) && version == WAUDIO_VERSION) {
         if (g_audio_ptr == 0) {
             g_audio_ptr = host_alloc(sizeof(waudio_t), 4);
             g_default_audio_ptr = host_alloc(4096 * 2 * sizeof(float), 4);
@@ -348,10 +384,67 @@ static void convert_mouse_coords(int wx, int wy, int *rx, int *ry,
 }
 
 /* ================================================================
- * Surface Presentation
+ * Surface Presentation & GIF Conversion
  * ================================================================ */
 
-static void render_surface(wsurface_t *s) {
+static int render_to_rgb24(wframebuffer_t *fb, uint8_t *out_rgb) {
+    if (!fb || fb->pixels == 0 || !out_rgb) return 0;
+    refresh_memory();
+    if (!g_mem) return 0;
+
+    uint32_t W = fb->width ? fb->width : 320;
+    uint32_t H = fb->height ? fb->height : 240;
+    uint32_t stride = fb->stride ? fb->stride : W;
+    uint32_t *vram = (uint32_t*)(g_mem + fb->pixels);
+
+    for (uint32_t y = 0; y < H; y++) {
+        for (uint32_t x = 0; x < W; x++) {
+            size_t src_idx = y * stride + x;
+            uint32_t px = vram[src_idx];
+            uint8_t r = px & 0xFF;
+            uint8_t g = (px >> 8) & 0xFF;
+            uint8_t b = (px >> 16) & 0xFF;
+
+            size_t out_idx = (y * W + x) * 3;
+            out_rgb[out_idx + 0] = r;
+            out_rgb[out_idx + 1] = g;
+            out_rgb[out_idx + 2] = b;
+        }
+    }
+    return 1;
+}
+
+static void capture_gif_frame(wframebuffer_t *fb) {
+    if (!g_gif_path || !fb || fb->pixels == 0) return;
+    uint32_t W = fb->width ? fb->width : 320;
+    uint32_t H = fb->height ? fb->height : 240;
+
+    if (!g_gif_encoder) {
+        int loop_count = (g_max_frames == 1) ? -1 : 0;
+        g_gif_encoder = gif_create(g_gif_path, (uint16_t)W, (uint16_t)H, loop_count);
+        if (!g_gif_encoder) {
+            fprintf(stderr, "Failed to create GIF file '%s'\n", g_gif_path);
+            return;
+        }
+    }
+
+    size_t req_sz = (size_t)W * H * 3;
+    if (g_gif_rgb_buf_sz < req_sz) {
+        g_gif_rgb_buf = (uint8_t*)realloc(g_gif_rgb_buf, req_sz);
+        g_gif_rgb_buf_sz = req_sz;
+    }
+
+    if (render_to_rgb24(fb, g_gif_rgb_buf)) {
+        gif_add_frame(g_gif_encoder, g_gif_rgb_buf, g_delay_cs);
+        g_captured_frames++;
+        if (g_gif_ptr && g_gif_ptr + sizeof(wgif_t) <= g_mem_len) {
+            wgif_t *g = (wgif_t*)(g_mem + g_gif_ptr);
+            g->frame_count = g_captured_frames;
+        }
+    }
+}
+
+static void render_surface(wframebuffer_t *s) {
     if (!s || s->pixels == 0) return;
     refresh_memory();
     if (!g_mem) return;
@@ -361,28 +454,12 @@ static void render_surface(wsurface_t *s) {
     uint32_t stride = s->stride ? s->stride : W;
     uint8_t *vram = g_mem + s->pixels;
 
-    Uint32 sdl_fmt = SDL_PIXELFORMAT_ABGR8888;
-    int bytes_per_pixel = 4;
-    if (s->format == WSURFACE_BGRA8888) {
-        sdl_fmt = SDL_PIXELFORMAT_ARGB8888;
-        bytes_per_pixel = 4;
-    } else if (s->format == WSURFACE_RGB565) {
-        sdl_fmt = SDL_PIXELFORMAT_RGB565;
-        bytes_per_pixel = 2;
-    } else if (s->format == WSURFACE_RGB888) {
-        sdl_fmt = SDL_PIXELFORMAT_RGB24;
-        bytes_per_pixel = 3;
-    } else {
-        sdl_fmt = SDL_PIXELFORMAT_ABGR8888;
-        bytes_per_pixel = 4;
-    }
-
-    if (!g_texture || g_prev_w != W || g_prev_h != H || g_prev_fmt != s->format) {
+    if (!g_texture || g_prev_w != W || g_prev_h != H) {
         if (g_texture) SDL_DestroyTexture(g_texture);
-        g_texture = SDL_CreateTexture(g_renderer, sdl_fmt, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
+        g_texture = SDL_CreateTexture(g_renderer, SDL_PIXELFORMAT_ABGR8888, SDL_TEXTUREACCESS_STREAMING, (int)W, (int)H);
         SDL_SetTextureScaleMode(g_texture, SDL_ScaleModeNearest);
         SDL_SetTextureBlendMode(g_texture, SDL_BLENDMODE_BLEND);
-        g_prev_w = W; g_prev_h = H; g_prev_fmt = s->format;
+        g_prev_w = W; g_prev_h = H;
     }
 
     if (s->dirty_count > 0 && s->dirty_offset != 0 && s->dirty_offset + s->dirty_count * sizeof(wrect_t) <= g_mem_len) {
@@ -392,21 +469,21 @@ static void render_surface(wsurface_t *s) {
         for (uint32_t i = 0; i < count; i++) {
             int rx = rects[i].x;
             int ry = rects[i].y;
-            int rw = rects[i].width;
-            int rh = rects[i].height;
-            if (rx < 0) { rw += rx; rx = 0; }
-            if (ry < 0) { rh += ry; ry = 0; }
-            if (rx + rw > (int)W) rw = (int)W - rx;
-            if (ry + rh > (int)H) rh = (int)H - ry;
-            if (rw <= 0 || rh <= 0) continue;
+            uint32_t rw = rects[i].w;
+            uint32_t rh = rects[i].h;
+            if (rx < 0) { rw = (rw > (uint32_t)(-rx)) ? (rw + rx) : 0; rx = 0; }
+            if (ry < 0) { rh = (rh > (uint32_t)(-ry)) ? (rh + ry) : 0; ry = 0; }
+            if (rx + rw > W) rw = (W > (uint32_t)rx) ? (W - rx) : 0;
+            if (ry + rh > H) rh = (H > (uint32_t)ry) ? (H - ry) : 0;
+            if (rw == 0 || rh == 0) continue;
 
-            SDL_Rect r = { rx, ry, rw, rh };
+            SDL_Rect r = { rx, ry, (int)rw, (int)rh };
             void *pixels; int pitch;
             if (SDL_LockTexture(g_texture, &r, &pixels, &pitch) == 0) {
-                for (int y = ry; y < ry + rh; y++) {
+                for (int y = ry; y < ry + (int)rh; y++) {
                     memcpy((uint8_t*)pixels + (y - ry) * pitch,
-                           vram + (y * stride + rx) * bytes_per_pixel,
-                           rw * bytes_per_pixel);
+                           vram + (y * stride + rx) * 4,
+                           rw * 4);
                 }
                 SDL_UnlockTexture(g_texture);
             }
@@ -418,12 +495,13 @@ static void render_surface(wsurface_t *s) {
         if (SDL_LockTexture(g_texture, &r, &pixels, &pitch) == 0) {
             for (int y = 0; y < (int)H; y++) {
                 memcpy((uint8_t*)pixels + y * pitch,
-                       vram + y * stride * bytes_per_pixel,
-                       W * bytes_per_pixel);
+                       vram + y * stride * 4,
+                       W * 4);
             }
             SDL_UnlockTexture(g_texture);
         }
     }
+
 
     int win_w, win_h;
     SDL_GetWindowSize(g_window, &win_w, &win_h);
@@ -436,16 +514,96 @@ static void render_surface(wsurface_t *s) {
 }
 
 /* ================================================================
+ * Time Helpers
+ * ================================================================ */
+
+static double get_time_sec(void) {
+#if defined(_WIN32)
+    static LARGE_INTEGER freq = {0};
+    LARGE_INTEGER count;
+    if (freq.QuadPart == 0) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&count);
+    return (double)count.QuadPart / (double)freq.QuadPart;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+#endif
+}
+
+static void print_usage(const char* prog) {
+    printf("Wagnostic 2.0 Native Runner (wasm3 + SDL2)\n\n");
+    printf("Usage: %s [options] <rom.wasm>\n\n", prog);
+    printf("Options:\n");
+    printf("  -n <frames>       Run for N frames (0 = run indefinitely, default: 0)\n");
+    printf("  -g, --gif <file>  Record output to animated GIF\n");
+    printf("  --delay <cs>      GIF frame delay in centiseconds (default: 2 = 20ms)\n");
+    printf("  --fps <fps>       Target frame rate (default: 60)\n");
+    printf("  --skip <count>    Skip N frames between recorded GIF frames\n");
+    printf("  --headless        Run headless without SDL2 window\n");
+    printf("  -b, --benchmark   Benchmark execution FPS\n");
+    printf("  -h, --help        Show this help message\n");
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "Usage: %s <rom.wasm>\n", argv[0]);
+        print_usage(argv[0]);
         return 1;
     }
 
-    strncpy(g_rom_path, argv[1], sizeof(g_rom_path)-1);
+    int force_gui = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+            g_max_frames = strtoull(argv[++i], NULL, 10);
+        } else if ((strcmp(argv[i], "-g") == 0 || strcmp(argv[i], "--gif") == 0) && i + 1 < argc) {
+            g_gif_path = argv[++i];
+        } else if (strcmp(argv[i], "--delay") == 0 && i + 1 < argc) {
+            g_delay_cs = (uint16_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--fps") == 0 && i + 1 < argc) {
+            int fps = atoi(argv[++i]);
+            if (fps > 0) {
+                g_target_fps = (uint32_t)fps;
+                g_delay_cs = (uint16_t)(100 / fps);
+                if (g_delay_cs == 0) g_delay_cs = 1;
+            }
+        } else if (strcmp(argv[i], "--skip") == 0 && i + 1 < argc) {
+            g_frame_skip = (uint32_t)atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--headless") == 0) {
+            g_headless = 1;
+        } else if (strcmp(argv[i], "--gui") == 0) {
+            force_gui = 1;
+        } else if (strcmp(argv[i], "-b") == 0 || strcmp(argv[i], "--benchmark") == 0) {
+            g_benchmark = 1;
+        } else if (argv[i][0] != '-') {
+            strncpy(g_rom_path, argv[i], sizeof(g_rom_path) - 1);
+        }
+    }
+
+    if (g_rom_path[0] == '\0') {
+        fprintf(stderr, "Error: No ROM file specified.\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    /* Auto-detect headless mode */
+    if (!force_gui) {
+        if (g_gif_path != NULL || g_max_frames > 0) {
+            g_headless = 1;
+        }
+#if !defined(_WIN32)
+        if (!getenv("DISPLAY") && !getenv("WAYLAND_DISPLAY")) {
+            g_headless = 1;
+        }
+#endif
+    }
 
     /* ---- Load ROM (TAR or Raw WASM) ---- */
     uint8_t *wasm_data = NULL;
@@ -455,7 +613,7 @@ int main(int argc, char **argv) {
     if (wasm_data) {
         g_is_tar = 1;
     } else {
-        FILE *f = fopen(argv[1], "rb");
+        FILE *f = fopen(g_rom_path, "rb");
         if (!f) { perror("Failed to open ROM"); return 1; }
         fseek(f, 0, SEEK_END);
         sz = ftell(f);
@@ -490,7 +648,83 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* ---- Initialize SDL ---- */
+    double start_time = get_time_sec();
+    uint64_t frames_run = 0;
+
+    /* ================================================================
+     * Headless Mode
+     * ================================================================ */
+    if (g_headless) {
+        while (g_max_frames == 0 || frames_run < g_max_frames) {
+            refresh_memory();
+            if (g_mem) {
+                if (g_clock_ptr != 0 && g_clock_ptr + sizeof(wclock_t) <= g_mem_len) {
+                    wclock_t *c = (wclock_t*)(g_mem + g_clock_ptr);
+                    c->ticks = (uint64_t)(frames_run * 1000 / g_target_fps);
+                    c->frequency = 1000;
+                    c->delta = 1.0f / (float)g_target_fps;
+                }
+                if (g_gif_ptr != 0 && g_gif_ptr + sizeof(wgif_t) <= g_mem_len) {
+                    wgif_t *g = (wgif_t*)(g_mem + g_gif_ptr);
+                    g->recording = (g_gif_path != NULL) ? 1 : 0;
+                    g->max_frames = (uint32_t)g_max_frames;
+                    g->delay_cs = g_delay_cs;
+                }
+            }
+
+            int32_t status = WUPDATE_OK;
+            result = m3_CallV(f_wupdate);
+            if (result) {
+                fprintf(stderr, "wupdate() runtime error at frame %llu: %s\n", (unsigned long long)frames_run, result);
+                break;
+            }
+            m3_GetResultsV(f_wupdate, &status);
+
+            if (status == WUPDATE_EXIT) {
+                break;
+            }
+            if (status < 0) {
+                fprintf(stderr, "wupdate() returned error code %d at frame %llu\n", status, (unsigned long long)frames_run);
+                break;
+            }
+
+            if (g_gif_path && (frames_run % (g_frame_skip + 1) == 0)) {
+                refresh_memory();
+                if (g_mem && g_fb_ptr != 0 && g_fb_ptr + sizeof(wframebuffer_t) <= g_mem_len) {
+                    wframebuffer_t *fb = (wframebuffer_t*)(g_mem + g_fb_ptr);
+                    capture_gif_frame(fb);
+                }
+            }
+
+            frames_run++;
+        }
+
+        if (g_gif_encoder) {
+            gif_close(g_gif_encoder);
+            g_gif_encoder = NULL;
+        }
+
+        double elapsed = get_time_sec() - start_time;
+        if (g_benchmark) {
+            double fps = (elapsed > 0.0) ? ((double)frames_run / elapsed) : 0.0;
+            printf("=== Native Runner Benchmark ===\n");
+            printf("ROM:            %s\n", g_rom_path);
+            printf("Frames Executed: %llu\n", (unsigned long long)frames_run);
+            printf("Total Time:     %.4f seconds\n", elapsed);
+            printf("Execution Rate: %.2f FPS\n", fps);
+            printf("===============================\n");
+        }
+
+        m3_FreeRuntime(g_runtime);
+        m3_FreeEnvironment(env);
+        free(wasm_data);
+        if (g_gif_rgb_buf) free(g_gif_rgb_buf);
+        return 0;
+    }
+
+    /* ================================================================
+     * GUI Mode (SDL2)
+     * ================================================================ */
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER) < 0) {
         fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
         m3_FreeRuntime(g_runtime); m3_FreeEnvironment(env); free(wasm_data);
@@ -533,7 +767,7 @@ int main(int argc, char **argv) {
     double perf_freq = (double)SDL_GetPerformanceFrequency();
 
     int running = 1;
-    while (running) {
+    while (running && (g_max_frames == 0 || frames_run < g_max_frames)) {
         uint64_t current_time = SDL_GetPerformanceCounter();
         float dt = (float)((double)(current_time - last_time) / perf_freq);
         last_time = current_time;
@@ -641,6 +875,12 @@ int main(int argc, char **argv) {
                 m->wheel_x = mouse_wheel_x;
                 m->wheel_y = mouse_wheel_y;
             }
+            if (g_gif_ptr != 0 && g_gif_ptr + sizeof(wgif_t) <= g_mem_len) {
+                wgif_t *g = (wgif_t*)(g_mem + g_gif_ptr);
+                g->recording = (g_gif_path != NULL) ? 1 : 0;
+                g->max_frames = (uint32_t)g_max_frames;
+                g->delay_cs = g_delay_cs;
+            }
             if (g_gamepad_ptr != 0 && g_gamepad_ptr + sizeof(wgamepad_t) <= g_mem_len) {
                 wgamepad_t *gp = (wgamepad_t*)(g_mem + g_gamepad_ptr);
                 gp->buttons = gamepad_buttons;
@@ -682,10 +922,13 @@ int main(int argc, char **argv) {
             }
         }
 
-        /* ---- Render Surface if std:surface active ---- */
-        if (g_mem && g_surface_ptr != 0 && g_surface_ptr + sizeof(wsurface_t) <= g_mem_len) {
-            wsurface_t *s = (wsurface_t*)(g_mem + g_surface_ptr);
-            render_surface(s);
+        /* ---- Render Framebuffer if std:framebuffer active ---- */
+        if (g_mem && g_fb_ptr != 0 && g_fb_ptr + sizeof(wframebuffer_t) <= g_mem_len) {
+            wframebuffer_t *fb = (wframebuffer_t*)(g_mem + g_fb_ptr);
+            render_surface(fb);
+            if (g_gif_path && (frames_run % (g_frame_skip + 1) == 0)) {
+                capture_gif_frame(fb);
+            }
         }
 
         /* Reset relative deltas */
@@ -697,13 +940,20 @@ int main(int argc, char **argv) {
             m->wheel_y = 0;
         }
 
-        /* FPS limiter (approx 60fps) */
+        frames_run++;
+
+        /* FPS limiter */
         static uint32_t frame_start = 0;
         uint32_t now = SDL_GetTicks();
-        uint32_t elapsed = now - frame_start;
-        int32_t delay = (1000 / 60) - (int32_t)elapsed;
+        uint32_t elapsed_ms = now - frame_start;
+        int32_t delay = (1000 / (int32_t)g_target_fps) - (int32_t)elapsed_ms;
         if (delay > 0) SDL_Delay((uint32_t)delay);
         frame_start = SDL_GetTicks();
+    }
+
+    if (g_gif_encoder) {
+        gif_close(g_gif_encoder);
+        g_gif_encoder = NULL;
     }
 
     /* ================================================================
@@ -719,6 +969,7 @@ int main(int argc, char **argv) {
     m3_FreeRuntime(g_runtime);
     m3_FreeEnvironment(env);
     free(wasm_data);
+    if (g_gif_rgb_buf) free(g_gif_rgb_buf);
 
     return 0;
 }

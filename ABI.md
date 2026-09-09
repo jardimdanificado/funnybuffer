@@ -45,23 +45,27 @@ All integers and floats use **32-bit Little-Endian** encoding. All structures ar
 
 ---
 
-## 4. Canonical Extension Specifications
+## 4. Canonical Standard Extensions
+
+The standard Wagnostic 2.0 core defines 5 canonical extensions:
+
+| Extension Name | Version | Description | Header |
+|---|---|---|---|
+| `std:framebuffer` | 1 | Visual display buffer, pixel formats, dimensions, dirty rectangles | `framebuffer.h` |
+| `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
+| `std:keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
+| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas | `mouse.h` |
+| `std:gif` | 1 | GIF recording status, frame counts, frame capture synchronization | `gif.h` |
 
 ---
 
-### 4.1 Extension `"surface"` (v1) — Visual Display & Framebuffer
-- **Name:** `"surface"` (also aliases `"std:surface"`)
+### 4.1 Extension `"std:framebuffer"` (v1) — Visual Display & Framebuffer
+- **Name:** `"std:framebuffer"` (also accepts legacy alias `"std:surface"`)
 - **Version:** `1`
-- **Total Size:** `36 bytes` | **Alignment:** `4 bytes`
+- **Total Size:** `32 bytes` | **Alignment:** `4 bytes`
+- **Pixel Format:** Strictly 32-bit RGBA8888 (`0xAABBGGRR` in Little-Endian / `[R, G, B, A]` byte order, 4 bytes per pixel).
 
 ```c
-typedef enum {
-    WSURFACE_RGBA8888 = 0,     /* 32-bit RGBA (8-bit per channel) */
-    WSURFACE_BGRA8888 = 1,     /* 32-bit BGRA */
-    WSURFACE_RGB565   = 2,     /* 16-bit packed RGB (5-6-5) */
-    WSURFACE_RGB888   = 3,     /* 24-bit RGB */
-} wsurface_format_t;
-
 typedef struct {
     int32_t  x;
     int32_t  y;
@@ -71,34 +75,32 @@ typedef struct {
 
 typedef struct {
     uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 36 */
-    uint32_t width;            /* Offset  8 (4B) - Host/Guest - Surface width in pixels */
-    uint32_t height;           /* Offset 12 (4B) - Host/Guest - Surface height in pixels */
-    uint32_t format;           /* Offset 16 (4B) - Host/Guest - wsurface_format_t */
-    uint32_t stride;           /* Offset 20 (4B) - Host/Guest - Row stride (0 = width) */
-    uint32_t pixels;           /* Offset 24 (4B) - Host/Guest - WASM pointer to pixel buffer */
-    uint32_t dirty_count;      /* Offset 28 (4B) - Guest - 0 = full frame; >0 = dirty rects */
-    uint32_t dirty_offset;     /* Offset 32 (4B) - Guest - WASM pointer to wrect_t[dirty_count] */
-} wsurface_t;
+    uint32_t size;             /* Offset  4 (4B) - Host - Always 32 */
+    uint32_t width;            /* Offset  8 (4B) - Host/Guest - Framebuffer width in pixels */
+    uint32_t height;           /* Offset 12 (4B) - Host/Guest - Framebuffer height in pixels */
+    uint32_t stride;           /* Offset 16 (4B) - Host/Guest - Row stride in pixels (0 = width) */
+    uint32_t pixels;           /* Offset 20 (4B) - Host/Guest - WASM pointer to 32-bit RGBA8888 pixel buffer */
+    uint32_t dirty_count;      /* Offset 24 (4B) - Guest - 0 = full frame; >0 = count of dirty rects */
+    uint32_t dirty_offset;     /* Offset 28 (4B) - Guest - WASM pointer to wrect_t[dirty_count] */
+} wframebuffer_t;
 ```
 
 #### Field Offset Table:
 | Offset | Size | Type | Field | Written By | Description |
 | :---: | :---: | :---: | :--- | :---: | :--- |
 | `0` | 4 | `u32` | `version` | Host | Extension version (1) |
-| `4` | 4 | `u32` | `size` | Host | Struct size in bytes (36) |
+| `4` | 4 | `u32` | `size` | Host | Struct size in bytes (32) |
 | `8` | 4 | `u32` | `width` | Host/Guest | Framebuffer width in pixels |
 | `12` | 4 | `u32` | `height` | Host/Guest | Framebuffer height in pixels |
-| `16` | 4 | `u32` | `format` | Host/Guest | Pixel format enum |
-| `20` | 4 | `u32` | `stride` | Host/Guest | Row stride in pixels (0 = width) |
-| `24` | 4 | `u32` | `pixels` | Host/Guest | WASM memory offset to pixel buffer |
-| `28` | 4 | `u32` | `dirty_count` | Guest | Number of dirty rectangles |
-| `32` | 4 | `u32` | `dirty_offset` | Guest | WASM memory offset to `wrect_t` array |
+| `16` | 4 | `u32` | `stride` | Host/Guest | Row stride in pixels (0 = width) |
+| `20` | 4 | `u32` | `pixels` | Host/Guest | WASM memory offset to 32-bit RGBA pixel buffer |
+| `24` | 4 | `u32` | `dirty_count` | Guest | Number of dirty rectangles |
+| `28` | 4 | `u32` | `dirty_offset` | Guest | WASM memory offset to `wrect_t` array |
 
 ---
 
-### 4.2 Extension `"clock"` (v1) — High-Precision Time & Delta
-- **Name:** `"clock"` (also aliases `"std:clock"`)
+### 4.2 Extension `"std:clock"` (v1) — High-Precision Time & Delta
+- **Name:** `"std:clock"` (also accepts `"clock"`)
 - **Version:** `1`
 - **Total Size:** `32 bytes` | **Alignment:** `8 bytes`
 
@@ -113,6 +115,7 @@ typedef struct {
 } wclock_t;
 ```
 
+
 #### Field Offset Table:
 | Offset | Size | Type | Field | Written By | Description |
 | :---: | :---: | :---: | :--- | :---: | :--- |
@@ -125,8 +128,8 @@ typedef struct {
 
 ---
 
-### 4.3 Extension `"keyboard"` (v1) — USB HID Keyboard Table
-- **Name:** `"keyboard"` (also aliases `"std:keyboard"`)
+### 4.3 Extension `"std:keyboard"` (v1) — USB HID Keyboard Table
+- **Name:** `"std:keyboard"` (also accepts `"keyboard"`)
 - **Version:** `1`
 - **Total Size:** `264 bytes` | **Alignment:** `4 bytes`
 
@@ -147,18 +150,22 @@ typedef struct {
 
 ---
 
-### 4.4 Extension `"mouse"` (v1) — Cursor, Buttons & Scroll
-- **Name:** `"mouse"` (also aliases `"std:mouse"`)
+### 4.4 Extension `"std:mouse"` (v1) — Cursor, Buttons & Scroll
+- **Name:** `"std:mouse"` (also accepts `"mouse"`)
 - **Version:** `1`
 - **Total Size:** `28 bytes` | **Alignment:** `4 bytes`
 
 ```c
+#define WMOUSE_BTN_LEFT   (1 << 0)
+#define WMOUSE_BTN_RIGHT  (1 << 1)
+#define WMOUSE_BTN_MIDDLE (1 << 2)
+
 typedef struct {
     uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
     uint32_t size;             /* Offset  4 (4B) - Host - Always 28 */
     int32_t  x;                /* Offset  8 (4B) - Host - Cursor X coordinate */
     int32_t  y;                /* Offset 12 (4B) - Host - Cursor Y coordinate */
-    uint32_t buttons;          /* Offset 16 (4B) - Host - Bitmask: 1=Left, 2=Middle, 4=Right */
+    uint32_t buttons;          /* Offset 16 (4B) - Host - Bitmask of active buttons */
     int32_t  wheel_x;          /* Offset 20 (4B) - Host - Horizontal scroll delta */
     int32_t  wheel_y;          /* Offset 24 (4B) - Host - Vertical scroll delta */
 } wmouse_t;
@@ -166,8 +173,8 @@ typedef struct {
 
 ---
 
-### 4.5 Extension `"gamepad"` (v1) — Digital Buttons & Analog Axes
-- **Name:** `"gamepad"` (also aliases `"std:gamepad"`)
+### 4.5 Extension `"std:gif"` (v1) — GIF Recording & Capture Synchronization
+- **Name:** `"std:gif"` (also accepts `"gif"`)
 - **Version:** `1`
 - **Total Size:** `28 bytes` | **Alignment:** `4 bytes`
 
@@ -175,108 +182,25 @@ typedef struct {
 typedef struct {
     uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
     uint32_t size;             /* Offset  4 (4B) - Host - Always 28 */
-    uint32_t buttons;          /* Offset  8 (4B) - Host - Bitmask of active buttons */
-    int16_t  axes[8];          /* Offset 12 (16B) - Host - 8 Analog axes (-32768 to 32767) */
-} wgamepad_t;
-```
-
-#### Gamepad Button Bits:
-| Button | Bit Mask | Button | Bit Mask | Button | Bit Mask |
-|---|---|---|---|---|---|
-| `A` / Bottom | `1 << 0` | `B` / Right | `1 << 1` | `X` / Left | `1 << 2` |
-| `Y` / Top | `1 << 3` | `L-Shoulder` | `1 << 4` | `R-Shoulder` | `1 << 5` |
-| `Select` | `1 << 6` | `Start` | `1 << 7` | `L-Stick` | `1 << 8` |
-| `R-Stick` | `1 << 9` | `D-Pad Up` | `1 << 10` | `D-Pad Down` | `1 << 11` |
-| `D-Pad Left` | `1 << 12` | `D-Pad Right` | `1 << 13` | | |
-
----
-
-### 4.6 Extension `"audio"` (v1) — PCM Lockless Ring Buffer Streaming
-- **Name:** `"audio"` (also aliases `"std:audio"`)
-- **Version:** `1`
-- **Total Size:** `36 bytes` | **Alignment:** `4 bytes`
-
-```c
-typedef enum {
-    WAUDIO_F32 = 0,            /* 32-bit float PCM (-1.0 to 1.0) */
-    WAUDIO_S16 = 1,            /* 16-bit signed integer PCM (-32768 to 32767) */
-} waudio_format_t;
-
-typedef struct {
-    uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 36 */
-    uint32_t sample_rate;      /* Offset  8 (4B) - Host/Guest - Sample rate (e.g. 44100) */
-    uint32_t channels;         /* Offset 12 (4B) - Host/Guest - Channel count (1=mono, 2=stereo) */
-    uint32_t format;           /* Offset 16 (4B) - Host/Guest - waudio_format_t */
-    uint32_t buffer;           /* Offset 20 (4B) - Host/Guest - WASM pointer to PCM ring buffer */
-    uint32_t capacity;         /* Offset 24 (4B) - Host/Guest - Capacity in audio frames */
-    uint32_t write;            /* Offset 28 (4B) - Guest - Write cursor in frames */
-    uint32_t read;             /* Offset 32 (4B) - Host - Read cursor in frames */
-} waudio_t;
-```
-
-#### Concurrency Protocol:
-- **Lockless Streaming:** The guest increments `write` as it generates samples. The host audio thread increments `read` as it sends samples to the sound card.
-- **Available Frames to Write:** `capacity - (write - read) - 1`.
-- **Available Frames to Read:** `write - read`.
-
----
-
-### 4.7 Extension `"dispatch"` (v1) — Parallel Workgroups & Compute Tiles (Wash)
-- **Name:** `"dispatch"` (also aliases `"std:dispatch"` and `"wash:dispatch"`)
-- **Version:** `1`
-- **Total Size:** `60 bytes` | **Alignment:** `4 bytes`
-
-```c
-typedef struct {
-    uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 60 */
-    uint32_t worker_id;        /* Offset  8 (4B) - Host - Current worker index (0..worker_count-1) */
-    uint32_t worker_count;     /* Offset 12 (4B) - Host - Total concurrent workers */
-    uint32_t global_offset;    /* Offset 16 (4B) - Host - 1D start index */
-    uint32_t global_length;    /* Offset 20 (4B) - Host - 1D element count for this worker */
-    uint32_t total_elements;   /* Offset 24 (4B) - Host - 1D total dataset size */
-    uint32_t tile_x;           /* Offset 28 (4B) - Host - 2D tile left coordinate */
-    uint32_t tile_y;           /* Offset 32 (4B) - Host - 2D tile top coordinate */
-    uint32_t tile_w;           /* Offset 36 (4B) - Host - 2D tile width */
-    uint32_t tile_h;           /* Offset 40 (4B) - Host - 2D tile height */
-    uint32_t full_w;           /* Offset 44 (4B) - Host - Full surface/matrix width */
-    uint32_t full_h;           /* Offset 48 (4B) - Host - Full surface/matrix height */
-    uint32_t stride;           /* Offset 52 (4B) - Host - Row stride in elements/pixels */
-    uint32_t data_ptr;         /* Offset 56 (4B) - Host - WASM pointer to shared buffer */
-} wdispatch_t;
+    uint32_t recording;        /* Offset  8 (4B) - Host - 1 if host is recording GIF, 0 otherwise */
+    uint32_t frame_count;      /* Offset 12 (4B) - Host - Number of frames captured so far */
+    uint32_t max_frames;       /* Offset 16 (4B) - Host - Max frames to record (0 = unlimited) */
+    uint32_t delay_cs;         /* Offset 20 (4B) - Host - Frame delay in centiseconds (1/100s) */
+    uint32_t save_trigger;     /* Offset 24 (4B) - Guest - ROM can set to 1 to signal frame capture */
+} wgif_t;
 ```
 
 ---
 
-## 5. Implementation Guide for New Hosts
+## 5. Official Runners
 
-Implementing a complete Wagnostic 2.0 host in any new language (e.g. Rust, Go, Python, Zig, Swift) requires only 3 steps:
+Wagnostic maintains **2 official reference runners**:
 
-### Step 1: Embed a WebAssembly Runtime
-Load the target `.wasm` binary using your language's WASM engine (Wasm3, Wasmtime, Wasmer, V8, etc.).
-
-### Step 2: Implement the `env.wextension` Host Import
-```
-function host_wextension(name: string, version: u32) -> u32 {
-    switch (name) {
-        case "surface":  return allocate_and_init_surface_struct();
-        case "clock":    return allocate_and_init_clock_struct();
-        case "keyboard": return allocate_and_init_keyboard_struct();
-        case "mouse":    return allocate_and_init_mouse_struct();
-        case "gamepad":  return allocate_and_init_gamepad_struct();
-        case "audio":    return allocate_and_init_audio_struct();
-        case "dispatch": return allocate_and_init_dispatch_struct();
-        default:         return 0; // Return NULL for unsupported extensions
-    }
-}
-```
-
-### Step 3: Main Loop Execution
-1. Update mapped peripheral structures (`clock.ticks`, `keyboard.keys`, `mouse.x/y`).
-2. Call exported `wupdate()`.
-3. If `surface.pixels != 0`, present the framebuffer to your platform's display (Window, Canvas, DirectFB, Framebuffer device).
-4. If `wupdate()` returns `1` (`WUPDATE_EXIT`), break the loop and exit cleanly.
+1. **`native` (`build/wagnostic`)**
+   - Implemented in standard C11 using [wasm3](https://github.com/wasm3/wasm3) and SDL2.
+   - Supports interactive desktop windowing OR headless execution & animated GIF export via CLI flags (`-g out.gif`, `-n frames`, `--headless`).
+2. **`node` (`emulators/node/wagnostic.js`)**
+   - Single-file host for Node.js using `@kmamal/sdl` for GUI or native headless execution (`-n frames`, `--headless`).
 
 ---
 
@@ -284,29 +208,29 @@ function host_wextension(name: string, version: u32) -> u32 {
 
 ```c
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 
-static wsurface_t *surface;
+static wframebuffer_t *fb;
 
 int32_t wupdate(void) {
-    if (!surface) {
-        surface = (wsurface_t*)wextension("surface", 1);
-        if (surface) {
-            surface->width  = 320;
-            surface->height = 240;
-            surface->stride = 320;
-            surface->format = WSURFACE_RGBA8888;
+    if (!fb) {
+        fb = (wframebuffer_t*)wextension("std:framebuffer", 1);
+        if (fb) {
+            fb->width  = 320;
+            fb->height = 240;
+            fb->stride = 320;
         }
     }
 
-    if (surface && surface->pixels) {
-        uint32_t *fb = (uint32_t*)surface->pixels;
+    if (fb && fb->pixels) {
+        uint32_t *pixels = (uint32_t*)fb->pixels;
         for (int i = 0; i < 320 * 240; i++) {
-            fb[i] = 0xFF0000FF; // Red
+            pixels[i] = 0xFF0000FF; // Red (0xAABBGGRR)
         }
     }
 
     return WUPDATE_OK;
 }
 ```
+
 

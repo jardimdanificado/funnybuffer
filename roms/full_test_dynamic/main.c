@@ -13,7 +13,9 @@ static wkeyboard_t *keyboard;
 static wmouse_t    *mouse;
 static wgamepad_t  *gamepad;
 
-static int current_fmt = WSURFACE_RGB565;
+#define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
+#define RGB(r, g, b) RGBA(r, g, b, 255)
+
 static int frame_count = 0;
 static int resize_state = 0;
 static int initialized = 0;
@@ -26,16 +28,7 @@ static void set_pixel(int x, int y, uint8_t r, uint8_t g, uint8_t b) {
     if (x < 0 || x >= w || y < 0 || y >= h) return;
 
     int idx = y * stride + x;
-    if (surface->format == WSURFACE_RGB565) {
-        ((uint16_t*)surface->pixels)[idx] = (((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-    } else if (surface->format == WSURFACE_RGB888) {
-        uint8_t* p = (uint8_t*)surface->pixels + idx * 3;
-        p[0] = r; p[1] = g; p[2] = b;
-    } else if (surface->format == WSURFACE_BGRA8888) {
-        ((uint32_t*)surface->pixels)[idx] = 0xFF000000 | (r << 16) | (g << 8) | b;
-    } else {
-        ((uint32_t*)surface->pixels)[idx] = 0xFF000000 | (b << 16) | (g << 8) | r;
-    }
+    ((uint32_t*)surface->pixels)[idx] = RGB(r, g, b);
 }
 
 static void fill_rect(int rx, int ry, int rw, int rh, uint8_t r, uint8_t g, uint8_t b) {
@@ -149,7 +142,6 @@ int32_t wupdate(void) {
             surface->width = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_RGB565;
         }
 
         initialized = 1;
@@ -159,15 +151,7 @@ int32_t wupdate(void) {
 
     frame_count++;
 
-    static int sp_was = 0, r_was = 0, k1_was = 0, k2_was = 0, k3_was = 0;
-
-    int key_sp = keyboard ? keyboard->keys[44] : 0;
-    if (key_sp && !sp_was) {
-        if (surface->format == WSURFACE_RGB565) surface->format = WSURFACE_RGB888;
-        else if (surface->format == WSURFACE_RGB888) surface->format = WSURFACE_RGBA8888;
-        else surface->format = WSURFACE_RGB565;
-    }
-    sp_was = key_sp;
+    static int r_was = 0;
 
     int key_r = keyboard ? keyboard->keys[21] : 0;
     if (key_r && !r_was) {
@@ -177,15 +161,6 @@ int32_t wupdate(void) {
         else { surface->width = 160; surface->height = 120; surface->stride = 160; }
     }
     r_was = key_r;
-
-    int k1 = keyboard ? keyboard->keys[30] : 0;
-    int k2 = keyboard ? keyboard->keys[31] : 0;
-    int k3 = keyboard ? keyboard->keys[32] : 0;
-
-    if (k1 && !k1_was) surface->format = WSURFACE_RGB565;
-    if (k2 && !k2_was) surface->format = WSURFACE_RGB888;
-    if (k3 && !k3_was) surface->format = WSURFACE_RGBA8888;
-    k1_was = k1; k2_was = k2; k3_was = k3;
 
     if (keyboard && keyboard->keys[41]) return WUPDATE_EXIT;
 

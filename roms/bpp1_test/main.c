@@ -1,6 +1,9 @@
-// bpp1_test - 1bpp (Monochrome) simulated via RGB565 surface
+// bpp1_test - 1bpp (Monochrome) simulated via RGBA8888 surface
 #include "wagnostic.h"
 #include "surface.h"
+
+#define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
+#define RGB(r, g, b) RGBA(r, g, b, 255)
 
 static wsurface_t *surface;
 static int initialized = 0;
@@ -14,19 +17,18 @@ int32_t wupdate(void) {
             surface->width = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_RGB565;
         }
         initialized = 1;
     }
 
     if (!surface || !surface->pixels) return WUPDATE_ERROR;
 
-    uint16_t *fb = (uint16_t*)surface->pixels;
+    uint32_t *fb = (uint32_t*)surface->pixels;
 
     for (int y = 0; y < 240; y++) {
         for (int x = 0; x < 320; x++) {
             int stripe = (x / 40) % 2;
-            fb[y * 320 + x] = stripe ? 0xFFFF : 0x0000;
+            fb[y * 320 + x] = stripe ? RGB(255, 255, 255) : RGB(0, 0, 0);
         }
     }
 
@@ -37,7 +39,7 @@ int32_t wupdate(void) {
         for (int sx = 0; sx < 20; sx++) {
             int cx = (px + sx) % 320;
             int cy = py + sy;
-            fb[cy * 320 + cx] ^= 0xFFFF;
+            fb[cy * 320 + cx] ^= 0x00FFFFFF;
         }
     }
 

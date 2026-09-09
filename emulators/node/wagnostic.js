@@ -11,12 +11,7 @@ const fs = require('fs');
 const path = require('path');
 const sdl = require('@kmamal/sdl');
 
-// ── Surface Formats & Wagnostic 2.0 Constants ─────────────
-const WSURFACE_RGBA8888 = 1;
-const WSURFACE_BGRA8888 = 2;
-const WSURFACE_RGB565   = 3;
-const WSURFACE_RGB888   = 4;
-
+// ── Constants ─────────────────────────────────────────────
 const WUPDATE_OK    =  0;
 const WUPDATE_EXIT  =  1;
 const WUPDATE_ERROR = -1;
@@ -43,74 +38,46 @@ function parseArgs() {
   let romPath = null;
   let forcedScale = 0;
   let forcedFps = 0;
+  let maxFrames = 0;
+  let headless = false;
 
-  for (const arg of args) {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
     if (arg.startsWith('--scale=')) {
       forcedScale = parseInt(arg.split('=')[1], 10) || 0;
     } else if (arg.startsWith('--fps=')) {
       forcedFps = parseInt(arg.split('=')[1], 10) || 0;
+    } else if (arg === '-n' && i + 1 < args.length) {
+      maxFrames = parseInt(args[++i], 10) || 0;
+      headless = true;
+    } else if (arg.startsWith('-n=')) {
+      maxFrames = parseInt(arg.split('=')[1], 10) || 0;
+      headless = true;
+    } else if (arg === '--headless') {
+      headless = true;
     } else if (!arg.startsWith('-') && !romPath) {
       romPath = arg;
     }
   }
 
   if (!romPath) {
-    console.log('Wagnostic 2.0 Single-File Node.js SDL2 Host');
-    console.log('Usage: node wagnostic.js <path-to-rom.wasm> [--scale=N] [--fps=N]');
+    console.log('Wagnostic 2.0 Single-File Node.js Host');
+    console.log('Usage: node wagnostic.js <path-to-rom.wasm> [-n N] [--headless] [--scale=N] [--fps=N]');
     process.exit(1);
   }
 
-  return { romPath, forcedScale, forcedFps };
+  return { romPath, forcedScale, forcedFps, maxFrames, headless };
 }
 
-// ── Convert Pixels to RGBA32 ──────────────────────────────
-function convertSurfaceToRgba32(format, vramRaw, width, height, stride, outBuffer) {
-  const totalPixels = width * height;
-  const out32 = new Uint32Array(outBuffer.buffer, outBuffer.byteOffset, totalPixels);
-
-  if (format === WSURFACE_RGBA8888) {
-    const in32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        out32[y * width + x] = in32[y * stride + x];
-      }
-    }
-  } else if (format === WSURFACE_BGRA8888) {
-    const in32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const px = in32[y * stride + x];
-        out32[y * width + x] = (px & 0xFF00FF00) | ((px & 0x00FF0000) >>> 16) | ((px & 0x000000FF) << 16);
-      }
-    }
-  } else if (format === WSURFACE_RGB565) {
-    const in16 = new Uint16Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const px = in16[y * stride + x];
-        let r = (px >>> 11) & 0x1F; r = (r << 3) | (r >>> 2);
-        let g = (px >>> 5)  & 0x3F; g = (g << 2) | (g >>> 4);
-        let b = px & 0x1F;        b = (b << 3) | (b >>> 2);
-        out32[y * width + x] = (255 << 24) | (b << 16) | (g << 8) | r;
-      }
-    }
-  } else if (format === WSURFACE_RGB888) {
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const idx = (y * stride + x) * 3;
-        const r = vramRaw[idx];
-        const g = vramRaw[idx + 1];
-        const b = vramRaw[idx + 2];
-        out32[y * width + x] = (255 << 24) | (b << 16) | (g << 8) | r;
-      }
-    }
+// ── Surface Render Helpers ─────────────────────────────────
+function copySurfaceRgba32(vramRaw, width, height, stride, outBuffer) {
+  if (stride === width) {
+    outBuffer.set(vramRaw.subarray(0, width * height * 4));
   } else {
-    // Default RGBA8888
-    const in32 = new Uint32Array(vramRaw.buffer, vramRaw.byteOffset, stride * height);
     for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        out32[y * width + x] = in32[y * stride + x];
-      }
+      const srcOffset = y * stride * 4;
+      const dstOffset = y * width * 4;
+      outBuffer.set(vramRaw.subarray(srcOffset, srcOffset + width * 4), dstOffset);
     }
   }
 }
@@ -154,8 +121,10 @@ async function main() {
   let clockPtr = 0;
   let keyboardPtr = 0;
   let mousePtr = 0;
+  let gifPtr = 0;
   let gamepadPtr = 0;
   let audioPtr = 0;
+  let dispatchPtr = 0;
 
   let defaultFbPtr = 0;
   let defaultDirtyPtr = 0;
@@ -166,26 +135,28 @@ async function main() {
       memory: new WebAssembly.Memory({ initial: 16 }),
       wextension: (namePtr, version) => {
         const name = readWasmString(namePtr);
-        if ((name === 'std:surface' || name === 'surface') && version === 1) {
-          if (!surfacePtr) {
-            surfacePtr = hostAlloc(36, 4);
-            defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
-            defaultDirtyPtr = hostAlloc(32 * 8, 4);
 
-            const view = new DataView(memory.buffer, surfacePtr, 36);
+        // 1. Framebuffer: std:framebuffer / std:surface
+        if ((name === 'std:framebuffer' || name === 'std:surface' || name === 'framebuffer' || name === 'surface') && version === 1) {
+          if (!surfacePtr) {
+            surfacePtr = hostAlloc(32, 4);
+            defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
+            defaultDirtyPtr = hostAlloc(32 * 16, 4);
+
+            const view = new DataView(memory.buffer, surfacePtr, 32);
             view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 36, true);              // size
+            view.setUint32(4, 32, true);              // size
             view.setUint32(8, 320, true);             // width
             view.setUint32(12, 240, true);            // height
-            view.setUint32(16, WSURFACE_RGBA8888, true);// format
-            view.setUint32(20, 320, true);            // stride
-            view.setUint32(24, defaultFbPtr, true);   // pixels
-            view.setUint32(28, 0, true);              // dirty_count
-            view.setUint32(32, defaultDirtyPtr, true);// dirty_offset
+            view.setUint32(16, 320, true);            // stride
+            view.setUint32(20, defaultFbPtr, true);   // pixels
+            view.setUint32(24, 0, true);              // dirty_count
+            view.setUint32(28, defaultDirtyPtr, true);// dirty_offset
           }
           return surfacePtr;
         }
 
+        // 2. Clock: std:clock
         if ((name === 'std:clock' || name === 'clock') && version === 1) {
           if (!clockPtr) {
             clockPtr = hostAlloc(32, 8);
@@ -199,6 +170,7 @@ async function main() {
           return clockPtr;
         }
 
+        // 3. Keyboard: std:keyboard
         if ((name === 'std:keyboard' || name === 'keyboard') && version === 1) {
           if (!keyboardPtr) {
             keyboardPtr = hostAlloc(264, 4);
@@ -210,6 +182,7 @@ async function main() {
           return keyboardPtr;
         }
 
+        // 4. Mouse: std:mouse
         if ((name === 'std:mouse' || name === 'mouse') && version === 1) {
           if (!mousePtr) {
             mousePtr = hostAlloc(28, 4);
@@ -223,6 +196,22 @@ async function main() {
             view.setInt32(24, 0, true);               // wheel_y
           }
           return mousePtr;
+        }
+
+        // 5. GIF: std:gif
+        if ((name === 'std:gif' || name === 'gif') && version === 1) {
+          if (!gifPtr) {
+            gifPtr = hostAlloc(28, 4);
+            const view = new DataView(memory.buffer, gifPtr, 28);
+            view.setUint32(0, 1, true);               // version
+            view.setUint32(4, 28, true);              // size
+            view.setUint32(8, 0, true);               // recording
+            view.setUint32(12, 0, true);              // frame_count
+            view.setUint32(16, maxFrames, true);      // max_frames
+            view.setUint32(20, 2, true);              // delay_cs
+            view.setUint32(24, 0, true);              // save_trigger
+          }
+          return gifPtr;
         }
 
         if ((name === 'std:gamepad' || name === 'gamepad') && version === 1) {
@@ -311,6 +300,38 @@ async function main() {
 
   memory = exports.memory || importObject.env.memory;
 
+  // ── Headless Mode Execution ─────────────────────────────────
+  if (headless) {
+    let frameCount = 0;
+    const targetFps = forcedFps || 60;
+    const dt = 1.0 / targetFps;
+
+    while (maxFrames === 0 || frameCount < maxFrames) {
+      if (clockPtr && clockPtr + 32 <= memory.buffer.byteLength) {
+        const view = new DataView(memory.buffer, clockPtr, 32);
+        view.setBigUint64(8, BigInt(Math.floor(frameCount * 1000 / targetFps)), true);
+        view.setFloat32(24, dt, true);
+      }
+
+      let status = WUPDATE_OK;
+      try {
+        status = exports.wupdate();
+      } catch (err) {
+        console.error('wupdate() runtime error at frame ' + frameCount + ':', err.message);
+        process.exit(1);
+      }
+
+      if (status === WUPDATE_EXIT) break;
+      if (status < 0) {
+        console.error('wupdate() returned error code ' + status + ' at frame ' + frameCount);
+        process.exit(1);
+      }
+      frameCount++;
+    }
+    process.exit(0);
+  }
+
+  // ── GUI Mode Execution (SDL2) ───────────────────────────────
   let window = null;
   let currentWidth = 0;
   let currentHeight = 0;
@@ -355,6 +376,7 @@ async function main() {
   let targetFps = forcedFps || 60;
   let frameIntervalNs = BigInt(Math.floor(1e9 / targetFps));
   let startTime = Date.now();
+  let framesRun = 0;
 
   function gameLoop() {
     if (!isRunning) return;
@@ -411,13 +433,12 @@ async function main() {
     mouseWheelY = 0;
 
     // Render Surface if registered
-    if (surfacePtr && surfacePtr + 36 <= memory.buffer.byteLength) {
-      const sView = new DataView(memory.buffer, surfacePtr, 36);
+    if (surfacePtr && surfacePtr + 32 <= memory.buffer.byteLength) {
+      const sView = new DataView(memory.buffer, surfacePtr, 32);
       const width = sView.getUint32(8, true) || 320;
       const height = sView.getUint32(12, true) || 240;
-      const format = sView.getUint32(16, true) || WSURFACE_RGBA8888;
-      const stride = sView.getUint32(20, true) || width;
-      const pixelsPtr = sView.getUint32(24, true);
+      const stride = sView.getUint32(16, true) || width;
+      const pixelsPtr = sView.getUint32(20, true);
       const scale = forcedScale || 1;
 
       if (!window || currentWidth !== width || currentHeight !== height || currentScale !== scale) {
@@ -481,22 +502,29 @@ async function main() {
       }
 
       if (window && !window.destroyed && isRunning && pixelsPtr > 0) {
-        let bppBytes = 4;
-        if (format === WSURFACE_RGB565) bppBytes = 2;
-        else if (format === WSURFACE_RGB888) bppBytes = 3;
-
-        const vramRaw = new Uint8Array(memory.buffer, pixelsPtr, stride * height * bppBytes);
+        const vramRaw = new Uint8Array(memory.buffer, pixelsPtr, stride * height * 4);
         const requiredSize = width * height * 4;
 
-        if (!conversionBuffer || conversionBuffer.length !== requiredSize) {
-          conversionBuffer = Buffer.alloc(requiredSize);
+        if (stride === width) {
+          try {
+            window.render(width, height, width * 4, 'rgba32', vramRaw);
+          } catch (err) {}
+        } else {
+          if (!conversionBuffer || conversionBuffer.length !== requiredSize) {
+            conversionBuffer = Buffer.alloc(requiredSize);
+          }
+          copySurfaceRgba32(vramRaw, width, height, stride, conversionBuffer);
+          try {
+            window.render(width, height, width * 4, 'rgba32', conversionBuffer);
+          } catch (err) {}
         }
-        convertSurfaceToRgba32(format, vramRaw, width, height, stride, conversionBuffer);
-
-        try {
-          window.render(width, height, width * 4, 'rgba32', conversionBuffer);
-        } catch (err) {}
       }
+    }
+
+    framesRun++;
+    if (maxFrames > 0 && framesRun >= maxFrames) {
+      exitCleanly();
+      return;
     }
 
     if (isRunning) {
@@ -511,3 +539,4 @@ main().catch(err => {
   console.error('Fatal error in Wagnostic Node Host:', err);
   process.exit(0);
 });
+

@@ -70,7 +70,6 @@ int32_t wupdate(void) {
             surface->width = WIDTH;
             surface->height = HEIGHT;
             surface->stride = WIDTH;
-            surface->format = WSURFACE_RGBA8888;
             surface->pixels = (uint32_t)vram;
         }
 

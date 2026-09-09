@@ -22,6 +22,9 @@ static inline float sin_approx(float x) {
     return (16.0f * x * (3.14159265f - ((x < 0) ? -x : x))) / (5.0f * 3.14159265f * 3.14159265f - 4.0f * x2);
 }
 
+#define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
+#define RGB(r, g, b) RGBA(r, g, b, 255)
+
 int32_t wupdate(void) {
     if (!initialized) {
         surface   = (wsurface_t*)wextension("std:surface", 1);
@@ -32,7 +35,6 @@ int32_t wupdate(void) {
             surface->width = 320;
             surface->height = 240;
             surface->stride = 320;
-            surface->format = WSURFACE_RGB565;
         }
 
         initialized = 1;
@@ -69,20 +71,20 @@ int32_t wupdate(void) {
 
     // Render Visual Oscilloscope
     if (surface && surface->pixels) {
-        uint16_t *fb = (uint16_t*)surface->pixels;
+        uint32_t *fb = (uint32_t*)surface->pixels;
         uint32_t w = surface->width ? surface->width : 320;
         uint32_t h = surface->height ? surface->height : 240;
         uint32_t stride = surface->stride ? surface->stride : w;
 
-        for (uint32_t i = 0; i < w * h; i++) fb[i] = 0x1082; // dark gray
+        for (uint32_t i = 0; i < w * h; i++) fb[i] = RGB(32, 32, 40); // dark gray
 
         // Draw sine wave
         for (uint32_t x = 0; x < w; x++) {
             float wave = sin_approx((float)x * 0.1f + (float)frame_count * 0.2f);
             int y = (int)(120 + wave * 40.0f);
             if (y >= 0 && y < (int)h) {
-                fb[y * stride + x] = 0x07E0; // green
-                if (y + 1 < (int)h) fb[(y + 1) * stride + x] = 0x07E0;
+                fb[y * stride + x] = RGB(0, 255, 0); // green
+                if (y + 1 < (int)h) fb[(y + 1) * stride + x] = RGB(0, 255, 0);
             }
         }
     }

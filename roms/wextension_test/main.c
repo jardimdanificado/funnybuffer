@@ -1,14 +1,12 @@
 #include "wagnostic.h"
 #include "framebuffer.h"
 #include "clock.h"
-#include "keyboard.h"
-#include "mouse.h"
+#include "io.h"
 #include "gif.h"
 
 static wframebuffer_t *framebuffer;
 static wclock_t       *clock_ext;
-static wkeyboard_t    *keyboard;
-static wmouse_t       *mouse;
+static wio_t          *io;
 static wgif_t         *gif;
 
 static int initialized = 0;
@@ -22,8 +20,7 @@ int32_t wupdate(void) {
         // Test 1: Discover standard extensions via std:*
         framebuffer = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
         clock_ext   = (wclock_t*)wextension(WCLOCK_EXTENSION, WCLOCK_VERSION);
-        keyboard    = (wkeyboard_t*)wextension(WKEYBOARD_EXTENSION, WKEYBOARD_VERSION);
-        mouse       = (wmouse_t*)wextension(WMOUSE_EXTENSION, WMOUSE_VERSION);
+        io          = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
         gif         = (wgif_t*)wextension(WGIF_EXTENSION, WGIF_VERSION);
 
         // Test 2: Unknown extension returns NULL
@@ -34,15 +31,13 @@ int32_t wupdate(void) {
 
         test_passed = (framebuffer != NULL) &&
                       (clock_ext != NULL) &&
-                      (keyboard != NULL) &&
-                      (mouse != NULL) &&
+                      (io != NULL) &&
                       (gif != NULL) &&
                       (unk == NULL) &&
                       (inv_ver == NULL) &&
                       (framebuffer->version == 1) &&
                       (clock_ext->version == 1) &&
-                      (keyboard->version == 1) &&
-                      (mouse->version == 1) &&
+                      (io->version == 1) &&
                       (gif->version == 1);
 
         initialized = 1;

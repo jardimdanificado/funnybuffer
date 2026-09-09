@@ -1,11 +1,9 @@
 #include "wagnostic.h"
-#include "surface.h"
-#include "keyboard.h"
-#include "mouse.h"
+#include "framebuffer.h"
+#include "io.h"
 
-static wsurface_t  *surface;
-static wkeyboard_t *keyboard;
-static wmouse_t    *mouse;
+static wframebuffer_t *surface;
+static wio_t          *io;
 
 #define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
 #define RGB(r, g, b) RGBA(r, g, b, 255)
@@ -27,9 +25,8 @@ static int initialized = 0;
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface  = (wsurface_t*)wextension("framebuffer", 1);
-        keyboard = (wkeyboard_t*)wextension("keyboard", 1);
-        mouse    = (wmouse_t*)wextension("mouse", 1);
+        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
+        io      = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
 
         if (surface) {
             surface->width = 320;
@@ -52,13 +49,13 @@ int32_t wupdate(void) {
         int cx = i % cols, cy = i / cols;
         int px = margin_x + cx * cell_w, py = margin_y + cy * cell_h;
         uint32_t col = RGB(119, 119, 119);
-        if (keyboard && keyboard->keys[i]) col = RGB(0, 204, 85);
+        if (io && io->keys[i]) col = RGB(0, 204, 85);
         draw_rect(px, py, cell_w - 1, cell_h - 1, col);
     }
 
-    int mx = mouse ? mouse->x : 0;
-    int my = mouse ? mouse->y : 0;
-    uint32_t mbtns = mouse ? mouse->buttons : 0;
+    int mx = io ? io->mouse_x : 0;
+    int my = io ? io->mouse_y : 0;
+    uint32_t mbtns = io ? io->mouse_buttons : 0;
 
     draw_rect(mx - 2, my - 2, 5, 5, RGB(255, 255, 255));
     if (mbtns & WMOUSE_BTN_LEFT) draw_rect(mx - 4, my - 4, 9, 9, RGB(255, 0, 0));

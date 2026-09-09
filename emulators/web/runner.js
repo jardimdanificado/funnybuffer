@@ -83,14 +83,10 @@
 
   let surfacePtr   = 0;
   let clockPtr     = 0;
-  let keyboardPtr  = 0;
-  let mousePtr     = 0;
-  let gamepadPtr   = 0;
-  let audioPtr     = 0;
+  let ioPtr        = 0;
 
   let defaultFbPtr    = 0;
   let defaultDirtyPtr = 0;
-  let defaultAudioPtr = 0;
   let arenaOffset     = 0;
 
   // Screen config tracking
@@ -246,20 +242,16 @@
       view.setBigUint64(8, BigInt(Math.floor(now - startTime)), true);
       view.setFloat32(24, dt, true);
     }
-    if (keyboardPtr && keyboardPtr + 264 <= wasmMemory.buffer.byteLength) {
-      new Uint8Array(wasmMemory.buffer, keyboardPtr + 8, 256).set(keysDown);
-    }
-    if (mousePtr && mousePtr + 28 <= wasmMemory.buffer.byteLength) {
-      const view = new DataView(wasmMemory.buffer, mousePtr, 28);
+    if (ioPtr && ioPtr + 304 <= wasmMemory.buffer.byteLength) {
+      const view = new DataView(wasmMemory.buffer, ioPtr, 304);
       view.setInt32(8, mouseX, true);
       view.setInt32(12, mouseY, true);
       view.setUint32(16, mouseButtons, true);
       view.setInt32(20, mouseWheelX, true);
       view.setInt32(24, mouseWheelY, true);
-    }
-    if (gamepadPtr && gamepadPtr + 28 <= wasmMemory.buffer.byteLength) {
-      const view = new DataView(wasmMemory.buffer, gamepadPtr, 28);
-      view.setUint32(8, gamepadBtns, true);
+      view.setUint32(28, gamepadBtns, true);
+      new Int16Array(wasmMemory.buffer, ioPtr + 32, 8).set(gamepadAxes);
+      new Uint8Array(wasmMemory.buffer, ioPtr + 48, 256).set(keysDown);
     }
 
     // 2. Call wupdate()
@@ -327,10 +319,7 @@
   function loadRomFromBuffer(buf) {
     surfacePtr = 0;
     clockPtr = 0;
-    keyboardPtr = 0;
-    mousePtr = 0;
-    gamepadPtr = 0;
-    audioPtr = 0;
+    ioPtr = 0;
     arenaOffset = 0;
 
     let wasmBuffer = buf;
@@ -343,7 +332,7 @@
       env: {
         wextension: function(namePtr, version) {
           const name = readWasmString(namePtr);
-          if ((name === 'framebuffer' || name === 'std:surface' || name === 'surface') && version === 1) {
+          if ((name === 'framebuffer' || name === 'std:surface' || name === 'std:framebuffer' || name === 'surface') && version === 1) {
             if (!surfacePtr) {
               surfacePtr = hostAlloc(20, 4);
               defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
@@ -371,83 +360,22 @@
             return clockPtr;
           }
 
-          if ((name === 'std:keyboard' || name === 'keyboard') && version === 1) {
-            if (!keyboardPtr) {
-              keyboardPtr = hostAlloc(264, 4);
-              const view = new DataView(wasmMemory.buffer, keyboardPtr, 264);
-              view.setUint32(0, 1, true);
-              view.setUint32(4, 264, true);
-              new Uint8Array(wasmMemory.buffer, keyboardPtr + 8, 256).fill(0);
+          if ((name === 'std:io' || name === 'io' || name === 'std:keyboard' || name === 'std:mouse' || name === 'std:gamepad' || name === 'keyboard' || name === 'mouse' || name === 'gamepad') && version === 1) {
+            if (!ioPtr) {
+              ioPtr = hostAlloc(304, 4);
+              const view = new DataView(wasmMemory.buffer, ioPtr, 304);
+              view.setUint32(0, 1, true);               // version
+              view.setUint32(4, 304, true);             // size
+              view.setInt32(8, 0, true);                // mouse_x
+              view.setInt32(12, 0, true);               // mouse_y
+              view.setUint32(16, 0, true);              // mouse_buttons
+              view.setInt32(20, 0, true);               // mouse_wheel_x
+              view.setInt32(24, 0, true);               // mouse_wheel_y
+              view.setUint32(28, 0, true);              // gamepad_buttons
+              new Int16Array(wasmMemory.buffer, ioPtr + 32, 8).fill(0); // gamepad_axes[8]
+              new Uint8Array(wasmMemory.buffer, ioPtr + 48, 256).fill(0); // keys[256]
             }
-            return keyboardPtr;
-          }
-
-          if ((name === 'std:mouse' || name === 'mouse') && version === 1) {
-            if (!mousePtr) {
-              mousePtr = hostAlloc(28, 4);
-              const view = new DataView(wasmMemory.buffer, mousePtr, 28);
-              view.setUint32(0, 1, true);
-              view.setUint32(4, 28, true);
-              view.setInt32(8, 0, true);
-              view.setInt32(12, 0, true);
-              view.setUint32(16, 0, true);
-              view.setInt32(20, 0, true);
-              view.setInt32(24, 0, true);
-            }
-            return mousePtr;
-          }
-
-          if ((name === 'std:gamepad' || name === 'gamepad') && version === 1) {
-            if (!gamepadPtr) {
-              gamepadPtr = hostAlloc(28, 4);
-              const view = new DataView(wasmMemory.buffer, gamepadPtr, 28);
-              view.setUint32(0, 1, true);
-              view.setUint32(4, 28, true);
-              view.setUint32(8, 0, true);
-            }
-            return gamepadPtr;
-          }
-
-          if ((name === 'std:audio' || name === 'audio') && version === 1) {
-            initAudio();
-            if (!audioPtr) {
-              audioPtr = hostAlloc(36, 4);
-              defaultAudioPtr = hostAlloc(4096 * 2 * 4, 4);
-              const view = new DataView(wasmMemory.buffer, audioPtr, 36);
-              view.setUint32(0, 1, true);
-              view.setUint32(4, 36, true);
-              view.setUint32(8, 44100, true);
-              view.setUint32(12, 2, true);
-              view.setUint32(16, 1, true); // F32
-              view.setUint32(20, defaultAudioPtr, true);
-              view.setUint32(24, 4096, true);
-              view.setUint32(28, 0, true);
-              view.setUint32(32, 0, true);
-            }
-            return audioPtr;
-          }
-
-          if ((name === 'std:dispatch' || name === 'wash:dispatch' || name === 'dispatch') && version === 1) {
-            if (!dispatchPtr) {
-              dispatchPtr = hostAlloc(60, 4);
-              const view = new DataView(wasmMemory.buffer, dispatchPtr, 60);
-              view.setUint32(0, 1, true);
-              view.setUint32(4, 60, true);
-              view.setUint32(8, 0, true);
-              view.setUint32(12, 1, true);
-              view.setUint32(16, 0, true);
-              view.setUint32(20, 320 * 240, true);
-              view.setUint32(24, 320 * 240, true);
-              view.setUint32(28, 0, true);
-              view.setUint32(32, 0, true);
-              view.setUint32(36, 320, true);
-              view.setUint32(40, 240, true);
-              view.setUint32(44, 320, true);
-              view.setUint32(48, 240, true);
-              view.setUint32(52, 320, true);
-              view.setUint32(56, defaultFbPtr || 0, true);
-            }
-            return dispatchPtr;
+            return ioPtr;
           }
 
           return 0;

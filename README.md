@@ -66,8 +66,7 @@ int32_t wupdate(void) {
 |---|---|---|---|
 | `std:framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`) and dimensions | `framebuffer.h` |
 | `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
-| `std:keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
-| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas (X, Y) | `mouse.h` |
+| `std:io` | 1 | Unified I/O: Mouse/Pointer (X, Y, buttons, wheel), Gamepad (buttons, 8 axes), and Keyboard (256 scancodes) | `io.h` |
 | `std:gif` | 1 | GIF recording status, frame count, delay, and frame capture synchronization | `gif.h` |
 | `logger` | 1 | Simple UTF-8 text message logging to host console | `logger.h` |
 

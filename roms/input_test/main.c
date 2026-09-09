@@ -1,17 +1,13 @@
 // input_test — Tests all input methods
 
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 #include "clock.h"
-#include "keyboard.h"
-#include "mouse.h"
-#include "gamepad.h"
+#include "io.h"
 
-static wsurface_t  *surface;
-static wclock_t    *clock_ext;
-static wkeyboard_t *keyboard;
-static wmouse_t    *mouse;
-static wgamepad_t  *gamepad;
+static wframebuffer_t *surface;
+static wclock_t       *clock_ext;
+static wio_t          *io;
 
 static uint32_t ticks = 0;
 static int initialized = 0;
@@ -86,7 +82,7 @@ static void draw_keyboard_section(void) {
     for (int i = 0; i < 256; i++) {
         int cx = i % cols, cy = i / cols;
         int px = ox + cx * cell_w, py = oy + cy * cell_h;
-        int is_pressed = keyboard && keyboard->keys[i];
+        int is_pressed = io && io->keys[i];
         uint32_t col = is_pressed ? RGB(0, 220, 80) : RGB(60, 60, 70);
         fill_rect(px, py, cell_w - 1, cell_h - 1, col);
     }
@@ -102,10 +98,10 @@ static void draw_mouse_section(void) {
     draw_hline(ox, ox + w, oy, RGB(80, 80, 80));
     draw_vline(ox, oy, oy + h, RGB(80, 80, 80));
 
-    int mx = mouse ? mouse->x : 0;
-    int my = mouse ? mouse->y : 0;
-    uint32_t mbtns = mouse ? mouse->buttons : 0;
-    int mwheel = mouse ? mouse->wheel_y : 0;
+    int mx = io ? io->mouse_x : 0;
+    int my = io ? io->mouse_y : 0;
+    uint32_t mbtns = io ? io->mouse_buttons : 0;
+    int mwheel = io ? io->mouse_wheel_y : 0;
 
     int cx = ox + 5 + (mx * (w - 10)) / 320;
     int cy = oy + 5 + (my * (h - 20)) / 240;
@@ -128,7 +124,7 @@ static void draw_gamepad_section(void) {
     fill_rect(ox, oy, w, h, RGB(20, 20, 30));
     draw_hline(ox, ox + w, oy, RGB(80, 80, 80));
 
-    uint32_t gp = gamepad ? gamepad->buttons : 0;
+    uint32_t gp = io ? io->gamepad_buttons : 0;
 
     int bx = ox + 10, by = oy + 10;
     uint32_t dc = RGB(100, 100, 100);
@@ -149,11 +145,9 @@ static void draw_gamepad_section(void) {
 int32_t wupdate(void) {
     ticks++;
     if (!initialized) {
-        surface   = (wsurface_t*)wextension("std:surface", 1);
-        clock_ext = (wclock_t*)wextension("std:clock", 1);
-        keyboard  = (wkeyboard_t*)wextension("std:keyboard", 1);
-        mouse     = (wmouse_t*)wextension("std:mouse", 1);
-        gamepad   = (wgamepad_t*)wextension("std:gamepad", 1);
+        surface   = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
+        clock_ext = (wclock_t*)wextension(WCLOCK_EXTENSION, WCLOCK_VERSION);
+        io        = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
 
         if (surface) {
             surface->width = 320;
@@ -172,7 +166,7 @@ int32_t wupdate(void) {
     draw_mouse_section();
     draw_gamepad_section();
 
-    if (keyboard && keyboard->keys[41]) return WUPDATE_EXIT; // Escape
+    if (io && io->keys[41]) return WUPDATE_EXIT; // Escape
 
     return WUPDATE_OK;
 }

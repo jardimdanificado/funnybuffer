@@ -62,9 +62,7 @@ async function run() {
   let fbPtr = 0;
   let defaultFbPtr = 0;
   let clockPtr = 0;
-  let keyboardPtr = 0;
-  let mousePtr = 0;
-  let gamepadPtr = 0;
+  let ioPtr = 0;
   let loggerPtr = 0;
   let loggerBufPtr = 0;
 
@@ -103,38 +101,23 @@ async function run() {
           return clockPtr;
         }
 
-        // 3. Keyboard
-        if ((name === 'keyboard' || name === 'std:keyboard') && version === 1) {
-          if (!keyboardPtr) {
-            keyboardPtr = hostAlloc(264, 4);
-            const view = new DataView(memory.buffer, keyboardPtr, 264);
-            view.setUint32(0, 1, true);
-            view.setUint32(4, 264, true);
-            new Uint8Array(memory.buffer, keyboardPtr + 8, 256).fill(0);
+        // 3. Unified I/O: std:io
+        if ((name === 'std:io' || name === 'io' || name === 'std:keyboard' || name === 'std:mouse' || name === 'std:gamepad' || name === 'keyboard' || name === 'mouse' || name === 'gamepad') && version === 1) {
+          if (!ioPtr) {
+            ioPtr = hostAlloc(304, 4);
+            const view = new DataView(memory.buffer, ioPtr, 304);
+            view.setUint32(0, 1, true);               // version = 1
+            view.setUint32(4, 304, true);             // size = 304
+            view.setInt32(8, 0, true);                // mouse_x
+            view.setInt32(12, 0, true);               // mouse_y
+            view.setUint32(16, 0, true);              // mouse_buttons
+            view.setInt32(20, 0, true);               // mouse_wheel_x
+            view.setInt32(24, 0, true);               // mouse_wheel_y
+            view.setUint32(28, 0, true);              // gamepad_buttons
+            new Int16Array(memory.buffer, ioPtr + 32, 8).fill(0); // gamepad_axes[8]
+            new Uint8Array(memory.buffer, ioPtr + 48, 256).fill(0); // keys[256]
           }
-          return keyboardPtr;
-        }
-
-        // 4. Mouse
-        if ((name === 'mouse' || name === 'std:mouse') && version === 1) {
-          if (!mousePtr) {
-            mousePtr = hostAlloc(28, 4);
-            const view = new DataView(memory.buffer, mousePtr, 28);
-            view.setUint32(0, 1, true);
-            view.setUint32(4, 28, true);
-          }
-          return mousePtr;
-        }
-
-        // 5. Gamepad
-        if ((name === 'gamepad' || name === 'std:gamepad') && version === 1) {
-          if (!gamepadPtr) {
-            gamepadPtr = hostAlloc(28, 4);
-            const view = new DataView(memory.buffer, gamepadPtr, 28);
-            view.setUint32(0, 1, true);
-            view.setUint32(4, 28, true);
-          }
-          return gamepadPtr;
+          return ioPtr;
         }
 
         // 6. Logger

@@ -1,17 +1,13 @@
 // full_test — Comprehensive test of Wagnostic 2.0 features
 
 #include "wagnostic.h"
-#include "surface.h"
+#include "framebuffer.h"
 #include "clock.h"
-#include "keyboard.h"
-#include "mouse.h"
-#include "gamepad.h"
+#include "io.h"
 
-static wsurface_t  *surface;
-static wclock_t    *clock_ext;
-static wkeyboard_t *keyboard;
-static wmouse_t    *mouse;
-static wgamepad_t  *gamepad;
+static wframebuffer_t *surface;
+static wclock_t       *clock_ext;
+static wio_t          *io;
 
 #define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
 #define RGB(r, g, b) RGBA(r, g, b, 255)
@@ -79,7 +75,7 @@ static void draw_keyboard(int ox, int oy, int qw, int qh) {
         if (key_idx >= 256) break;
         int cx = i % cols, cy = i / cols;
         int px = ox + 4 + cx * cell_w, py = oy + 12 + cy * cell_h;
-        int is_pressed = keyboard && keyboard->keys[key_idx];
+        int is_pressed = io && io->keys[key_idx];
         uint8_t cr = is_pressed ? 0 : 50;
         uint8_t cg = is_pressed ? 200 : 50;
         uint8_t cb = is_pressed ? 80 : 60;
@@ -107,10 +103,10 @@ static void draw_dirty_anim(int ox, int oy, int qw, int qh) {
 
 static void draw_mouse(int ox, int oy, int qw, int qh) {
     if (!surface) return;
-    int mx = mouse ? mouse->x : 0;
-    int my = mouse ? mouse->y : 0;
-    uint32_t mbtns = mouse ? mouse->buttons : 0;
-    int mwheel = mouse ? mouse->wheel_y : 0;
+    int mx = io ? io->mouse_x : 0;
+    int my = io ? io->mouse_y : 0;
+    uint32_t mbtns = io ? io->mouse_buttons : 0;
+    int mwheel = io ? io->mouse_wheel_y : 0;
 
     int cx = ox + (mx * qw) / (int)surface->width;
     int cy = oy + (my * qh) / (int)surface->height;
@@ -131,11 +127,9 @@ static void draw_mouse(int ox, int oy, int qw, int qh) {
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface   = (wsurface_t*)wextension("framebuffer", 1);
-        clock_ext = (wclock_t*)wextension("clock", 1);
-        keyboard  = (wkeyboard_t*)wextension("keyboard", 1);
-        mouse     = (wmouse_t*)wextension("mouse", 1);
-        gamepad   = (wgamepad_t*)wextension("gamepad", 1);
+        surface   = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
+        clock_ext = (wclock_t*)wextension(WCLOCK_EXTENSION, WCLOCK_VERSION);
+        io        = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
 
         if (surface) {
             surface->width = 320;
@@ -151,7 +145,7 @@ int32_t wupdate(void) {
 
     static int r_was = 0;
 
-    int key_r = keyboard ? keyboard->keys[21] : 0;
+    int key_r = io ? io->keys[21] : 0;
     if (key_r && !r_was) {
         resize_state = (resize_state + 1) % 3;
         if (resize_state == 0) { surface->width = 320; surface->height = 240; }
@@ -160,7 +154,7 @@ int32_t wupdate(void) {
     }
     r_was = key_r;
 
-    if (keyboard && keyboard->keys[41]) return WUPDATE_EXIT;
+    if (io && io->keys[41]) return WUPDATE_EXIT;
 
     int W = (int)surface->width, H = (int)surface->height;
     clear(15, 15, 20);

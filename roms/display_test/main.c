@@ -1,11 +1,11 @@
 // display_test — Tests surface modes and formats
 
 #include "wagnostic.h"
-#include "surface.h"
-#include "keyboard.h"
+#include "framebuffer.h"
+#include "io.h"
 
-static wsurface_t  *surface;
-static wkeyboard_t *keyboard;
+static wframebuffer_t *surface;
+static wio_t          *io;
 
 #define RGBA(r, g, b, a) ((uint32_t)(((uint8_t)(a) << 24) | ((uint8_t)(b) << 16) | ((uint8_t)(g) << 8) | (uint8_t)(r)))
 #define RGB(r, g, b) RGBA(r, g, b, 255)
@@ -74,8 +74,8 @@ static void draw_status(void) {
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface  = (wsurface_t*)wextension("framebuffer", 1);
-        keyboard = (wkeyboard_t*)wextension("keyboard", 1);
+        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
+        io      = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
 
         if (surface) {
             surface->width = 320;
@@ -91,7 +91,7 @@ int32_t wupdate(void) {
 
     static int r_was_down = 0;
 
-    int r_down = keyboard ? keyboard->keys[21] : 0;
+    int r_down = io ? io->keys[21] : 0;
     if (r_down && !r_was_down) {
         resize_state = (resize_state + 1) % 3;
         if (resize_state == 0) {

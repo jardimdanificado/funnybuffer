@@ -51,12 +51,9 @@ Wagnostic defines clean, modular extensions for common capabilities. All extensi
 
 | Extension Name | Version | Description | Header |
 |---|---|---|---|
-| Extension Name | Version | Description | Header |
-|---|---|---|---|
 | `std:framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`) and dimensions | `framebuffer.h` |
 | `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
-| `std:keyboard` | 1 | 256-byte USB HID scancode state table | `keyboard.h` |
-| `std:mouse` | 1 | Pointer coordinates (X, Y), buttons bitmask, wheel deltas | `mouse.h` |
+| `std:io` | 1 | Unified I/O: Mouse/Pointer (X, Y, buttons, wheel), Gamepad (buttons, 8 axes), and Keyboard (256 scancodes) | `io.h` |
 | `std:gif` | 1 | Headless GIF recording synchronization | `gif.h` |
 | `logger` | 1 | Simple UTF-8 text message logging to host console | `logger.h` |
 
@@ -106,41 +103,66 @@ typedef struct {
 
 ---
 
-### 4.3 Extension `"std:keyboard"` (v1) — USB HID Keyboard Table
-- **Name:** `"std:keyboard"` (also accepts `"keyboard"`)
+### 4.3 Extension `"std:io"` (v1) — Unified Input (Mouse, Gamepad, Keyboard)
+- **Name:** `"std:io"` (also accepts `"io"`, `"std:keyboard"`, `"std:mouse"`, `"std:gamepad"`)
 - **Version:** `1`
-- **Total Size:** `264 bytes` | **Alignment:** `4 bytes`
+- **Total Size:** `304 bytes` | **Alignment:** `4 bytes`
 
 ```c
-typedef struct {
-    uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 264 */
-    uint8_t  keys[256];        /* Offset  8 (256B) - Host - Scancode state (0=up, 1=down) */
-} wkeyboard_t;
-```
-
----
-
-### 4.4 Extension `"std:mouse"` (v1) — Cursor, Buttons & Scroll
-- **Name:** `"std:mouse"` (also accepts `"mouse"`)
-- **Version:** `1`
-- **Total Size:** `28 bytes` | **Alignment:** `4 bytes`
-
-```c
+/* Mouse Buttons */
 #define WMOUSE_BTN_LEFT   (1 << 0)
 #define WMOUSE_BTN_RIGHT  (1 << 1)
 #define WMOUSE_BTN_MIDDLE (1 << 2)
 
+/* Gamepad Buttons */
+#define WGAMEPAD_BTN_A             (1 << 0)
+#define WGAMEPAD_BTN_B             (1 << 1)
+#define WGAMEPAD_BTN_X             (1 << 2)
+#define WGAMEPAD_BTN_Y             (1 << 3)
+#define WGAMEPAD_BTN_LEFTSHOULDER  (1 << 4)
+#define WGAMEPAD_BTN_RIGHTSHOULDER (1 << 5)
+#define WGAMEPAD_BTN_SELECT        (1 << 6)
+#define WGAMEPAD_BTN_START         (1 << 7)
+#define WGAMEPAD_BTN_LEFTSTICK     (1 << 8)
+#define WGAMEPAD_BTN_RIGHTSTICK    (1 << 9)
+#define WGAMEPAD_BTN_DPAD_UP       (1 << 10)
+#define WGAMEPAD_BTN_DPAD_DOWN     (1 << 11)
+#define WGAMEPAD_BTN_DPAD_LEFT     (1 << 12)
+#define WGAMEPAD_BTN_DPAD_RIGHT    (1 << 13)
+
 typedef struct {
-    uint32_t version;          /* Offset  0 (4B) - Host - Always 1 */
-    uint32_t size;             /* Offset  4 (4B) - Host - Always 28 */
-    int32_t  x;                /* Offset  8 (4B) - Host - Cursor X coordinate */
-    int32_t  y;                /* Offset 12 (4B) - Host - Cursor Y coordinate */
-    uint32_t buttons;          /* Offset 16 (4B) - Host - Bitmask of active buttons */
-    int32_t  wheel_x;          /* Offset 20 (4B) - Host - Horizontal scroll delta */
-    int32_t  wheel_y;          /* Offset 24 (4B) - Host - Vertical scroll delta */
-} wmouse_t;
+    uint32_t version;          /* Offset   0 (4B) - Host - Always 1 */
+    uint32_t size;             /* Offset   4 (4B) - Host - Always 304 */
+
+    /* Pointer / Mouse */
+    int32_t  mouse_x;          /* Offset   8 (4B) - Host - Cursor X coordinate */
+    int32_t  mouse_y;          /* Offset  12 (4B) - Host - Cursor Y coordinate */
+    uint32_t mouse_buttons;    /* Offset  16 (4B) - Host - Buttons bitmask (1=L, 2=R, 4=M) */
+    int32_t  mouse_wheel_x;    /* Offset  20 (4B) - Host - Horizontal scroll delta */
+    int32_t  mouse_wheel_y;    /* Offset  24 (4B) - Host - Vertical scroll delta */
+
+    /* Gamepad */
+    uint32_t gamepad_buttons;  /* Offset  28 (4B) - Host - Gamepad buttons bitmask */
+    int16_t  gamepad_axes[8];  /* Offset  32 (16B) - Host - 8 analog axes (-32768..32767) */
+
+    /* Keyboard */
+    uint8_t  keys[256];        /* Offset  48 (256B) - Host - USB HID scancodes (0=up, 1=down) */
+} wio_t;
 ```
+
+#### Field Offset Table:
+| Offset | Size | Type | Field | Written By | Description |
+| :---: | :---: | :---: | :--- | :---: | :--- |
+| `0` | 4 | `u32` | `version` | Host | Extension version (1) |
+| `4` | 4 | `u32` | `size` | Host | Struct size in bytes (304) |
+| `8` | 4 | `i32` | `mouse_x` | Host | Mouse/Pointer X coordinate |
+| `12` | 4 | `i32` | `mouse_y` | Host | Mouse/Pointer Y coordinate |
+| `16` | 4 | `u32` | `mouse_buttons` | Host | Mouse buttons bitmask (bit 0=Left, 1=Right, 2=Middle) |
+| `20` | 4 | `i32` | `mouse_wheel_x` | Host | Horizontal scroll delta |
+| `24` | 4 | `i32` | `mouse_wheel_y` | Host | Vertical scroll delta |
+| `28` | 4 | `u32` | `gamepad_buttons` | Host | Gamepad buttons bitmask (`WGAMEPAD_BTN_*`) |
+| `32` | 16 | `i16[8]` | `gamepad_axes` | Host | 8 analog axes (`-32768` to `32767`) |
+| `48` | 256 | `u8[256]` | `keys` | Host | USB HID keyboard scancode state table (0=up, 1=down) |
 
 ---
 

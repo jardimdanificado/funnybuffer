@@ -6,3 +6,6 @@ all: ../logger_example.wasm
 
 ../logger_example.wasm: main.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+clean:
+	rm -f ../logger_example.wasm

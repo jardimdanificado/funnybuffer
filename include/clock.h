@@ -4,16 +4,11 @@
 #include <stdint.h>
 
 #define WCLOCK_EXTENSION "std:clock"
-#define WCLOCK_VERSION   1
 
 typedef struct {
-    uint32_t version;
-    uint32_t size;
-
     uint64_t ticks;
     uint64_t frequency;
-
-    float delta;
+    float    delta;
 } wclock_t;
 
 #endif /* WAGNOSTIC_CLOCK_H */

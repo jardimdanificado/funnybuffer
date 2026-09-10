@@ -25,8 +25,8 @@ static int initialized = 0;
 
 int32_t wupdate(void) {
     if (!initialized) {
-        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
-        io      = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
+        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION);
+        io      = (wio_t*)wextension(WIO_EXTENSION);
 
         if (surface) {
             surface->width = 320;

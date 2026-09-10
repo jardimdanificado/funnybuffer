@@ -1,86 +1,216 @@
 #!/usr/bin/env node
-
 /**
- * Wagnostic 2.0 Single-File Node.js SDL2 Host (`wagnostic.js`)
+ * Wagnostic 2.0 — Universal Zero-Dependency Terminal & Headless Runner
  * 
- * Standalone Host written for Node.js.
- * Requires only @kmamal/sdl for native windowing, rendering, and audio.
+ * Runs on Node.js and txiki.js (tjs).
+ * Renders 32-bit RGBA8888 framebuffer directly into any terminal using ANSI TrueColor.
+ * 
+ * Supports all Standard Extensions:
+ * - std:framebuffer (v1)
+ * - std:clock       (v1)
+ * - std:io          (v1)
+ * - std:gif         (v1)
+ * - logger          (v1)
+ * 
+ * Usage:
+ *   node runners/node/wagnostic.js <rom.wasm|rom.tar> [-n <frames>] [-fps <fps>] [--headless] [-g <out.gif>]
+ *   tjs runners/node/wagnostic.js <rom.wasm|rom.tar> ...
  */
 
-const fs = require('fs');
-const path = require('path');
-const sdl = require('@kmamal/sdl');
+// ── Environment Abstraction Layer (Node.js <-> txiki.js) ──
+const isTxiki = typeof tjs !== 'undefined' || typeof globalThis.tjs !== 'undefined';
+const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
-// ── Constants ─────────────────────────────────────────────
-const WUPDATE_OK    =  0;
-const WUPDATE_EXIT  =  1;
-const WUPDATE_ERROR = -1;
-
-// Gamepad Bitmasks
-const GP_A             = 1 << 0;
-const GP_B             = 1 << 1;
-const GP_X             = 1 << 2;
-const GP_Y             = 1 << 3;
-const GP_LEFTSHOULDER  = 1 << 4;
-const GP_RIGHTSHOULDER = 1 << 5;
-const GP_SEL           = 1 << 6;
-const GP_START         = 1 << 7;
-const GP_LEFTSTICK     = 1 << 8;
-const GP_RIGHTSTICK    = 1 << 9;
-const GP_UP            = 1 << 10;
-const GP_DOWN          = 1 << 11;
-const GP_LEFT          = 1 << 12;
-const GP_RIGHT         = 1 << 13;
-
-// ── Parse Arguments ──────────────────────────────────────
-function parseArgs() {
-  const args = process.argv.slice(2);
-  let romPath = null;
-  let forcedScale = 0;
-  let forcedFps = 0;
-  let maxFrames = 0;
-  let headless = false;
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith('--scale=')) {
-      forcedScale = parseInt(arg.split('=')[1], 10) || 0;
-    } else if (arg.startsWith('--fps=')) {
-      forcedFps = parseInt(arg.split('=')[1], 10) || 0;
-    } else if (arg === '-n' && i + 1 < args.length) {
-      maxFrames = parseInt(args[++i], 10) || 0;
-      headless = true;
-    } else if (arg.startsWith('-n=')) {
-      maxFrames = parseInt(arg.split('=')[1], 10) || 0;
-      headless = true;
-    } else if (arg === '--headless') {
-      headless = true;
-    } else if (!arg.startsWith('-') && !romPath) {
-      romPath = arg;
+const ENV = {
+  argv: isNode ? process.argv.slice(2) : (typeof tjs !== 'undefined' && tjs.args ? tjs.args.slice(1) : []),
+  cwd: isNode ? process.cwd() : (typeof tjs !== 'undefined' && tjs.cwd ? tjs.cwd() : '.'),
+  exit: (code = 0) => {
+    if (isNode) process.exit(code);
+    else if (typeof tjs !== 'undefined' && tjs.exit) tjs.exit(code);
+  },
+  stdoutWrite: (str) => {
+    if (isNode) process.stdout.write(str);
+    else if (typeof tjs !== 'undefined' && tjs.stdout) tjs.stdout.write(new TextEncoder().encode(str));
+  },
+  getTermSize: () => {
+    if (isNode) return { cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 };
+    return { cols: 80, rows: 24 };
+  },
+  readFile: (filePath) => {
+    if (isNode) {
+      const fs = require('fs');
+      return fs.readFileSync(filePath);
+    } else if (typeof tjs !== 'undefined') {
+      const f = tjs.open(filePath, 'r');
+      const stat = f.stat();
+      const buf = new Uint8Array(stat.size);
+      f.read(buf);
+      f.close();
+      return buf;
+    }
+    throw new Error('Unsupported runtime for file reading');
+  },
+  writeFile: (filePath, data) => {
+    if (isNode) {
+      const fs = require('fs');
+      fs.writeFileSync(filePath, data);
+    } else if (typeof tjs !== 'undefined') {
+      const f = tjs.open(filePath, 'w');
+      f.write(data);
+      f.close();
     }
   }
+};
 
-  if (!romPath) {
-    console.log('Wagnostic 2.0 Single-File Node.js Host');
-    console.log('Usage: node wagnostic.js <path-to-rom.wasm> [-n N] [--headless] [--scale=N] [--fps=N]');
-    process.exit(1);
+// ── Parse Command Line Arguments ──────────────────────────
+let wasmFile = null;
+let maxFrames = 0;
+let targetFps = 30;
+let headless = false;
+let gifPath = null;
+
+for (let i = 0; i < ENV.argv.length; i++) {
+  const arg = ENV.argv[i];
+  if (arg === '-n' || arg === '--frames') {
+    maxFrames = parseInt(ENV.argv[++i], 10) || 0;
+  } else if (arg.startsWith('-n=')) {
+    maxFrames = parseInt(arg.split('=')[1], 10) || 0;
+  } else if (arg === '-fps' || arg.startsWith('--fps=')) {
+    targetFps = parseInt(arg.includes('=') ? arg.split('=')[1] : ENV.argv[++i], 10) || 30;
+  } else if (arg === '--headless') {
+    headless = true;
+  } else if (arg === '-g' || arg.startsWith('--gif=')) {
+    gifPath = arg.includes('=') ? arg.split('=')[1] : ENV.argv[++i];
+  } else if (!wasmFile && !arg.startsWith('-')) {
+    wasmFile = arg;
   }
-
-  return { romPath, forcedScale, forcedFps, maxFrames, headless };
 }
 
-// ── Main Host Execution ───────────────────────────────────
-async function main() {
-  const { romPath, forcedScale, forcedFps, maxFrames, headless } = parseArgs();
+if (!wasmFile) {
+  console.log('Wagnostic 2.0 Universal Runner (Node.js & txiki.js)');
+  console.log('Usage: wagnostic <rom.wasm|rom.tar> [-n <frames>] [-fps <fps>] [--headless] [-g <out.gif>]');
+  ENV.exit(1);
+}
 
-  const absoluteRomPath = path.resolve(process.cwd(), romPath);
-  if (!fs.existsSync(absoluteRomPath)) {
-    console.error(`Error: ROM file not found: ${absoluteRomPath}`);
-    process.exit(1);
+// ── TAR Archive Extraction Helper ─────────────────────────
+function extractFromTar(buf, targetFileName) {
+  let offset = 0;
+  let lastFound = null;
+  const u8 = new Uint8Array(buf.buffer || buf);
+
+  while (offset + 512 <= u8.byteLength) {
+    if (u8[offset] === 0) break;
+    let nameLen = 0;
+    while (nameLen < 100 && u8[offset + nameLen] !== 0) nameLen++;
+    const name = new TextDecoder().decode(u8.subarray(offset, offset + nameLen));
+
+    let sizeStr = '';
+    for (let i = 0; i < 12; i++) {
+      const ch = u8[offset + 124 + i];
+      if (ch >= 48 && ch <= 55) sizeStr += String.fromCharCode(ch);
+    }
+    const size = parseInt(sizeStr, 8) || 0;
+
+    if (name === targetFileName || name.endsWith('/' + targetFileName)) {
+      lastFound = u8.subarray(offset + 512, offset + 512 + size);
+    }
+    const skip = size + ((512 - (size % 512)) % 512);
+    offset += 512 + skip;
+  }
+  return lastFound;
+}
+
+// ── Load Binary Bytes ─────────────────────────────────────
+let rawBytes;
+try {
+  rawBytes = ENV.readFile(wasmFile);
+} catch (e) {
+  console.error(`Error: Failed to open file: ${wasmFile}`);
+  ENV.exit(1);
+}
+
+let wasmBytes = rawBytes;
+const extractedWasm = extractFromTar(rawBytes, 'main.wasm');
+if (extractedWasm) {
+  wasmBytes = extractedWasm;
+}
+
+// ── Pure JS LZW GIF Encoder (Zero Dependencies) ───────────
+class MinimalGifEncoder {
+  constructor(width, height, delayCs = 2) {
+    this.width = width;
+    this.height = height;
+    this.delayCs = delayCs;
+    this.frames = [];
   }
 
-  const wasmBytes = fs.readFileSync(absoluteRomPath);
+  addFrame(pixelsRgba) {
+    const indexed = new Uint8Array(this.width * this.height);
+    for (let i = 0; i < indexed.length; i++) {
+      const px = pixelsRgba[i];
+      const r = (px & 0xFF) >> 6;
+      const g = ((px >> 8) & 0xFF) >> 6;
+      const b = ((px >> 16) & 0xFF) >> 6;
+      indexed[i] = (r << 4) | (g << 2) | b;
+    }
+    this.frames.push(indexed);
+  }
 
+  save() {
+    const out = [];
+    const writeStr = (s) => { for (let i = 0; i < s.length; i++) out.push(s.charCodeAt(i)); };
+    const write16 = (v) => { out.push(v & 0xFF, (v >> 8) & 0xFF); };
+
+    writeStr("GIF89a");
+    write16(this.width);
+    write16(this.height);
+    out.push(0xF5, 0x00, 0x00);
+
+    for (let r = 0; r < 4; r++) {
+      for (let g = 0; g < 4; g++) {
+        for (let b = 0; b < 4; b++) {
+          out.push(Math.round(r * 85), Math.round(g * 85), Math.round(b * 85));
+        }
+      }
+    }
+
+    out.push(0x21, 0xFF, 0x0B);
+    writeStr("NETSCAPE2.0");
+    out.push(0x03, 0x01, 0x00, 0x00, 0x00);
+
+    for (const frameData of this.frames) {
+      out.push(0x21, 0xF9, 0x04, 0x00);
+      write16(this.delayCs);
+      out.push(0x00, 0x00);
+
+      out.push(0x2C);
+      write16(0); write16(0);
+      write16(this.width); write16(this.height);
+      out.push(0x00);
+
+      const minCodeSize = 6;
+      out.push(minCodeSize);
+      const clearCode = 1 << minCodeSize;
+      const eoiCode = clearCode + 1;
+
+      let pos = 0;
+      while (pos < frameData.length) {
+        const chunkLen = Math.min(254, frameData.length - pos);
+        out.push(chunkLen + 1);
+        out.push(clearCode);
+        for (let i = 0; i < chunkLen; i++) out.push(frameData[pos++]);
+      }
+      out.push(1, eoiCode);
+      out.push(0x00);
+    }
+
+    out.push(0x3B);
+    return new Uint8Array(out);
+  }
+}
+
+// ── Main Execution ────────────────────────────────────────
+async function run() {
   let memory = null;
   let arenaOffset = 0;
 
@@ -96,105 +226,98 @@ async function main() {
     return ptr;
   }
 
-  function readWasmString(ptr) {
+  function readString(ptr) {
     if (!ptr || !memory) return '';
     const bytes = new Uint8Array(memory.buffer, ptr);
     let len = 0;
-    while (len < 1024 && bytes[len] !== 0) len++;
+    while (len < 256 && bytes[len] !== 0) len++;
     return new TextDecoder().decode(bytes.subarray(0, len));
   }
 
-  let surfacePtr = 0;
+  let fbPtr = 0;
+  let defaultFbPtr = 0;
   let clockPtr = 0;
   let ioPtr = 0;
   let gifPtr = 0;
   let loggerPtr = 0;
+  let loggerBufPtr = 0;
 
-  let defaultFbPtr = 0;
-  let defaultDirtyPtr = 0;
-  let defaultLoggerBufPtr = 0;
+  const keyState = new Uint8Array(256);
+  let mouseX = 0, mouseY = 0, mouseButtons = 0;
+  let gamepadMask = 0;
+  const gamepadAxes = new Int16Array(8);
 
   const importObject = {
     env: {
       memory: new WebAssembly.Memory({ initial: 16 }),
-      wextension: (namePtr, version) => {
-        const name = readWasmString(namePtr);
+      wextension: (namePtr) => {
+        const name = readString(namePtr);
 
-        // 1. Framebuffer: framebuffer / surface
-        if ((name === 'framebuffer' || name === 'surface' || name === 'std:framebuffer' || name === 'std:surface') && version === 1) {
-          if (!surfacePtr) {
-            surfacePtr = hostAlloc(20, 4);
+        // 1. Framebuffer (std:framebuffer)
+        if (name === 'std:framebuffer' || name === 'framebuffer' || name === 'surface' || name === 'std:surface') {
+          if (!fbPtr) {
+            fbPtr = hostAlloc(12, 4);
             defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
-
-            const view = new DataView(memory.buffer, surfacePtr, 20);
-            view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 20, true);              // size
-            view.setUint32(8, 320, true);             // width
-            view.setUint32(12, 240, true);            // height
-            view.setUint32(16, defaultFbPtr, true);   // pixels
+            const view = new DataView(memory.buffer, fbPtr, 12);
+            view.setUint32(0, 320, true);             // width = 320
+            view.setUint32(4, 240, true);             // height = 240
+            view.setUint32(8, defaultFbPtr, true);    // pixels
           }
-          return surfacePtr;
+          return fbPtr;
         }
 
-        // 2. Clock: std:clock
-        if ((name === 'std:clock' || name === 'clock') && version === 1) {
+        // 2. Clock (std:clock)
+        if (name === 'std:clock' || name === 'clock') {
           if (!clockPtr) {
-            clockPtr = hostAlloc(32, 8);
-            const view = new DataView(memory.buffer, clockPtr, 32);
-            view.setUint32(0, 1, true);
-            view.setUint32(4, 32, true);
-            view.setBigUint64(8, 0n, true);           // ticks
-            view.setBigUint64(16, 1000n, true);       // frequency
-            view.setFloat32(24, 0.0166667, true);     // delta
+            clockPtr = hostAlloc(24, 8);
+            const view = new DataView(memory.buffer, clockPtr, 24);
+            view.setBigUint64(0, 0n, true);           // ticks
+            view.setBigUint64(8, 1000n, true);       // frequency
+            view.setFloat32(16, 1.0 / targetFps, true); // delta
           }
           return clockPtr;
         }
 
-        // 3. Unified I/O: std:io
-        if ((name === 'std:io' || name === 'io' || name === 'std:keyboard' || name === 'std:mouse' || name === 'std:gamepad' || name === 'keyboard' || name === 'mouse' || name === 'gamepad') && version === 1) {
+        // 3. Unified I/O (std:io)
+        if (name === 'std:io' || name === 'io' || name === 'std:keyboard' || name === 'std:mouse' || name === 'std:gamepad' || name === 'keyboard' || name === 'mouse' || name === 'gamepad') {
           if (!ioPtr) {
-            ioPtr = hostAlloc(304, 4);
-            const view = new DataView(memory.buffer, ioPtr, 304);
-            view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 304, true);             // size
-            view.setInt32(8, 0, true);                // mouse_x
-            view.setInt32(12, 0, true);               // mouse_y
-            view.setUint32(16, 0, true);              // mouse_buttons
-            view.setInt32(20, 0, true);               // mouse_wheel_x
-            view.setInt32(24, 0, true);               // mouse_wheel_y
-            view.setUint32(28, 0, true);              // gamepad_buttons
-            new Int16Array(memory.buffer, ioPtr + 32, 8).fill(0); // gamepad_axes[8]
-            new Uint8Array(memory.buffer, ioPtr + 48, 256).fill(0); // keys[256]
+            ioPtr = hostAlloc(296, 4);
+            const view = new DataView(memory.buffer, ioPtr, 296);
+            view.setInt32(0, 0, true);                // mouse_x
+            view.setInt32(4, 0, true);                // mouse_y
+            view.setUint32(8, 0, true);               // mouse_buttons
+            view.setInt32(12, 0, true);               // mouse_wheel_x
+            view.setInt32(16, 0, true);               // mouse_wheel_y
+            view.setUint32(20, 0, true);              // gamepad_buttons
+            new Int16Array(memory.buffer, ioPtr + 24, 8).fill(0); // gamepad_axes[8]
+            new Uint8Array(memory.buffer, ioPtr + 40, 256).fill(0); // keys[256]
           }
           return ioPtr;
         }
 
-        // 4. GIF: std:gif
-        if ((name === 'std:gif' || name === 'gif') && version === 1) {
+        // 4. GIF Recording (std:gif)
+        if (name === 'std:gif' || name === 'gif') {
           if (!gifPtr) {
-            gifPtr = hostAlloc(28, 4);
-            const view = new DataView(memory.buffer, gifPtr, 28);
-            view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 28, true);              // size
-            view.setUint32(8, 0, true);               // recording
-            view.setUint32(12, 0, true);              // frame_count
-            view.setUint32(16, maxFrames, true);      // max_frames
-            view.setUint32(20, 2, true);              // delay_cs
-            view.setUint32(24, 0, true);              // save_trigger
+            gifPtr = hostAlloc(20, 4);
+            const view = new DataView(memory.buffer, gifPtr, 20);
+            view.setUint32(0, (gifPath || maxFrames > 0) ? 1 : 0, true); // recording
+            view.setUint32(4, 0, true);               // frame_count
+            view.setUint32(8, maxFrames, true);       // max_frames
+            view.setUint32(12, 2, true);              // delay_cs
+            view.setUint32(16, 0, true);              // save_trigger
           }
           return gifPtr;
         }
 
-        if (name === 'logger' && version === 1) {
+        // 5. Logger (logger)
+        if (name === 'logger') {
           if (!loggerPtr) {
-            loggerPtr = hostAlloc(20, 4);
-            defaultLoggerBufPtr = hostAlloc(1024, 4);
-            const view = new DataView(memory.buffer, loggerPtr, 20);
-            view.setUint32(0, 1, true);               // version
-            view.setUint32(4, 20, true);              // size
-            view.setUint32(8, defaultLoggerBufPtr, true); // buffer
-            view.setUint32(12, 1024, true);           // capacity
-            view.setUint32(16, 0, true);              // length
+            loggerPtr = hostAlloc(12, 4);
+            loggerBufPtr = hostAlloc(1024, 4);
+            const view = new DataView(memory.buffer, loggerPtr, 12);
+            view.setUint32(0, loggerBufPtr, true);    // buffer
+            view.setUint32(4, 1024, true);            // capacity
+            view.setUint32(8, 0, true);               // length
           }
           return loggerPtr;
         }
@@ -207,7 +330,7 @@ async function main() {
       fd_write: () => 0,
       fd_seek: () => 0,
       fd_close: () => 0,
-      proc_exit: (code) => process.exit(code),
+      proc_exit: (code) => ENV.exit(code),
     }
   };
 
@@ -219,239 +342,196 @@ async function main() {
       wasmModule = await WebAssembly.instantiate(wasmBytes, {});
     } catch (e2) {
       console.error('Failed to instantiate WebAssembly module:', err.message);
-      process.exit(1);
+      ENV.exit(1);
     }
   }
 
   const instance = wasmModule.instance;
   const exports = instance.exports;
 
-  if (!exports.wupdate) {
-    console.error('Error: ROM does not export "wupdate()" function.');
-    process.exit(1);
+  if (typeof exports.wupdate !== 'function') {
+    console.error('Error: ROM does not export wupdate()');
+    ENV.exit(1);
   }
 
   memory = exports.memory || importObject.env.memory;
 
-  // ── Headless Mode Execution ─────────────────────────────────
-  if (headless) {
-    let frameCount = 0;
-    const targetFps = forcedFps || 60;
-    const dt = 1.0 / targetFps;
-
-    while (maxFrames === 0 || frameCount < maxFrames) {
-      if (clockPtr && clockPtr + 32 <= memory.buffer.byteLength) {
-        const view = new DataView(memory.buffer, clockPtr, 32);
-        view.setBigUint64(8, BigInt(Math.floor(frameCount * 1000 / targetFps)), true);
-        view.setFloat32(24, dt, true);
-      }
-
-      let status = WUPDATE_OK;
-      try {
-        status = exports.wupdate();
-      } catch (err) {
-        console.error('wupdate() runtime error at frame ' + frameCount + ':', err.message);
-        process.exit(1);
-      }
-
-      if (status === WUPDATE_EXIT) break;
-      if (status < 0) {
-        console.error('wupdate() returned error code ' + status + ' at frame ' + frameCount);
-        process.exit(1);
-      }
-      frameCount++;
-    }
-    process.exit(0);
-  }
-
-  // ── GUI Mode Execution (SDL2) ───────────────────────────────
-  let window = null;
-  let currentWidth = 0;
-  let currentHeight = 0;
-  let currentScale = 1;
-
+  let gifEncoder = null;
   let isRunning = true;
-  let conversionBuffer = null;
 
-  const keyBuffer = new Uint8Array(256);
-  let mouseX = 0, mouseY = 0;
-  let mouseButtonsMask = 0;
-  let mouseWheelX = 0, mouseWheelY = 0;
-  let gamepadMask = 0;
-  const gamepadAxes = new Int16Array(8);
-
-  function exitCleanly() {
-    isRunning = false;
-    if (window && !window.destroyed) {
-      try { window.destroy(); } catch (e) {}
-    }
-    process.exit(0);
-  }
-
-  function updateGamepadKey(scancode, isDown) {
-    let bit = 0;
-    if (scancode === 0x52) bit = GP_UP;    // ArrowUp
-    if (scancode === 0x51) bit = GP_DOWN;  // ArrowDown
-    if (scancode === 0x50) bit = GP_LEFT;  // ArrowLeft
-    if (scancode === 0x4F) bit = GP_RIGHT; // ArrowRight
-    if (scancode === 0x1D) bit = GP_A;     // Z
-    if (scancode === 0x1B) bit = GP_B;     // X
-    if (scancode === 0x28) bit = GP_START; // Enter
-    if (scancode === 0xE1 || scancode === 0xE5) bit = GP_SEL; // Shift
-
-    if (bit) {
-      if (isDown) gamepadMask |= bit;
-      else gamepadMask &= ~bit;
-    }
-  }
-
-  let lastFrameTime = process.hrtime.bigint();
-  let targetFps = forcedFps || 60;
-  let frameIntervalNs = BigInt(Math.floor(1e9 / targetFps));
-  let startTime = Date.now();
-  let framesRun = 0;
-
-  function gameLoop() {
+  function cleanup() {
     if (!isRunning) return;
-
-    const now = process.hrtime.bigint();
-    const elapsed = now - lastFrameTime;
-
-    if (elapsed < frameIntervalNs) {
-      setImmediate(gameLoop);
-      return;
+    isRunning = false;
+    if (!headless) {
+      ENV.stdoutWrite('\x1b[?25h\x1b[0m\n');
+      if (isNode && process.stdin.isTTY && process.stdin.setRawMode) {
+        process.stdin.setRawMode(false);
+      }
     }
-    const dt = Number(elapsed) / 1e9;
-    lastFrameTime = now;
-
-    // Update Extension Buffers
-    if (clockPtr && clockPtr + 32 <= memory.buffer.byteLength) {
-      const view = new DataView(memory.buffer, clockPtr, 32);
-      view.setBigUint64(8, BigInt(Date.now() - startTime), true);
-      view.setFloat32(24, dt, true);
+    if (gifEncoder && gifPath) {
+      try {
+        const gifData = gifEncoder.save();
+        ENV.writeFile(gifPath, gifData);
+        console.log(`[GIF] Saved ${gifEncoder.frames.length} frames to ${gifPath}`);
+      } catch (err) {
+        console.error('Failed to save GIF:', err.message);
+      }
     }
-    if (ioPtr && ioPtr + 304 <= memory.buffer.byteLength) {
-      const view = new DataView(memory.buffer, ioPtr, 304);
-      view.setInt32(8, mouseX, true);
-      view.setInt32(12, mouseY, true);
-      view.setUint32(16, mouseButtonsMask, true);
-      view.setInt32(20, mouseWheelX, true);
-      view.setInt32(24, mouseWheelY, true);
-      view.setUint32(28, gamepadMask, true);
-      new Int16Array(memory.buffer, ioPtr + 32, 8).set(gamepadAxes);
-      new Uint8Array(memory.buffer, ioPtr + 48, 256).set(keyBuffer);
+  }
+
+  if (isNode) {
+    process.on('SIGINT', () => { cleanup(); ENV.exit(0); });
+    process.on('exit', cleanup);
+  }
+
+  if (!headless) {
+    ENV.stdoutWrite('\x1b[?25l\x1b[2J');
+    if (isNode && process.stdin.isTTY && process.stdin.setRawMode) {
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.on('data', (key) => {
+        if (key[0] === 3 || key[0] === 27 || key[0] === 113) {
+          cleanup();
+          ENV.exit(0);
+        }
+        if (key[0] === 0x1b && key[1] === 0x5b) {
+          if (key[2] === 0x41) { keyState[0x52] = 1; gamepadMask |= (1 << 10); }
+          if (key[2] === 0x42) { keyState[0x51] = 1; gamepadMask |= (1 << 11); }
+          if (key[2] === 0x44) { keyState[0x50] = 1; gamepadMask |= (1 << 12); }
+          if (key[2] === 0x43) { keyState[0x4F] = 1; gamepadMask |= (1 << 13); }
+        }
+        if (key[0] === 122 || key[0] === 90) { keyState[0x1D] = 1; gamepadMask |= (1 << 0); }
+        if (key[0] === 120 || key[0] === 88) { keyState[0x1B] = 1; gamepadMask |= (1 << 1); }
+        if (key[0] === 13) { keyState[0x28] = 1; gamepadMask |= (1 << 7); }
+      });
+    }
+  }
+
+  function renderTerminal(frameNum) {
+    if (!fbPtr || fbPtr + 12 > memory.buffer.byteLength) return;
+
+    const fbView = new DataView(memory.buffer, fbPtr, 12);
+    const fbW = fbView.getUint32(0, true) || 320;
+    const fbH = fbView.getUint32(4, true) || 240;
+    const pixelsPtr = fbView.getUint32(8, true);
+
+    if (!pixelsPtr || fbW === 0 || fbH === 0 || pixelsPtr + fbW * fbH * 4 > memory.buffer.byteLength) return;
+
+    const pixels = new Uint32Array(memory.buffer, pixelsPtr, fbW * fbH);
+
+    if (gifPath && !gifEncoder) {
+      gifEncoder = new MinimalGifEncoder(fbW, fbH, Math.round(100 / targetFps));
+    }
+    if (gifEncoder) {
+      gifEncoder.addFrame(pixels);
     }
 
-    let status = WUPDATE_OK;
+    if (headless) return;
+
+    const { cols: termCols, rows: termRows } = ENV.getTermSize();
+    const maxTermRows = Math.max(10, termRows - 2);
+
+    const termW = Math.min(termCols, fbW);
+    const termH = Math.min(maxTermRows * 2, fbH);
+
+    let out = '\x1b[H';
+
+    for (let ty = 0; ty < termH; ty += 2) {
+      for (let tx = 0; tx < termW; tx++) {
+        const srcX = Math.floor((tx * fbW) / termW);
+        const srcY1 = Math.floor((ty * fbH) / termH);
+        const srcY2 = Math.min(fbH - 1, Math.floor(((ty + 1) * fbH) / termH));
+
+        const pxTop = pixels[srcY1 * fbW + srcX];
+        const pxBot = (ty + 1 < termH) ? pixels[srcY2 * fbW + srcX] : pxTop;
+
+        const r1 = pxTop & 0xFF, g1 = (pxTop >> 8) & 0xFF, b1 = (pxTop >> 16) & 0xFF;
+        const r2 = pxBot & 0xFF, g2 = (pxBot >> 8) & 0xFF, b2 = (pxBot >> 16) & 0xFF;
+
+        out += `\x1b[38;2;${r1};${g1};${b1}m\x1b[48;2;${r2};${g2};${b2}m▀`;
+      }
+      out += '\x1b[0m\n';
+    }
+
+    out += `\x1b[0m\x1b[90m [Wagnostic] Frame ${frameNum} | ${fbW}x${fbH} -> ${termW}x${termH} (Press 'q' or ESC to exit)\x1b[0m`;
+    ENV.stdoutWrite(out);
+  }
+
+  let frame = 0;
+  let lastTime = Date.now();
+  const startTime = Date.now();
+
+  function step() {
+    if (!isRunning) return;
+    frame++;
+    const now = Date.now();
+    const deltaSec = (now - lastTime) / 1000.0;
+    lastTime = now;
+
+    if (clockPtr && clockPtr + 24 <= memory.buffer.byteLength) {
+      const view = new DataView(memory.buffer, clockPtr, 24);
+      view.setBigUint64(0, BigInt(now - startTime), true);
+      view.setFloat32(16, deltaSec, true);
+    }
+
+    if (ioPtr && ioPtr + 296 <= memory.buffer.byteLength) {
+      const view = new DataView(memory.buffer, ioPtr, 296);
+      view.setInt32(0, mouseX, true);
+      view.setInt32(4, mouseY, true);
+      view.setUint32(8, mouseButtons, true);
+      view.setUint32(20, gamepadMask, true);
+      new Uint8Array(memory.buffer, ioPtr + 40, 256).set(keyState);
+    }
+
+    if (loggerPtr && loggerPtr + 12 <= memory.buffer.byteLength) {
+      const view = new DataView(memory.buffer, loggerPtr, 12);
+      const len = view.getUint32(8, true);
+      if (len > 0) {
+        const textBytes = new Uint8Array(memory.buffer, loggerBufPtr, len);
+        const str = new TextDecoder().decode(textBytes);
+        console.log(`[ROM Log] ${str}`);
+        view.setUint32(8, 0, true);
+      }
+    }
+
+    let status = 0;
     try {
       status = exports.wupdate();
     } catch (err) {
-      console.error('wupdate() threw an error:', err.message);
-      exitCleanly();
-      return;
+      console.error(`wupdate() error at frame ${frame}:`, err.message);
+      cleanup();
+      ENV.exit(1);
     }
 
-    if (status === WUPDATE_EXIT || status < 0) {
-      exitCleanly();
-      return;
+    if (status === 1) {
+      cleanup();
+      ENV.exit(0);
+    }
+    if (status < 0) {
+      console.error(`wupdate() returned error code ${status}`);
+      cleanup();
+      ENV.exit(1);
     }
 
-    // Reset relative wheel delta
-    mouseWheelX = 0;
-    mouseWheelY = 0;
+    renderTerminal(frame);
 
-    // Render Surface if registered
-    if (surfacePtr && surfacePtr + 20 <= memory.buffer.byteLength) {
-      const sView = new DataView(memory.buffer, surfacePtr, 20);
-      const width = sView.getUint32(8, true) || 320;
-      const height = sView.getUint32(12, true) || 240;
-      const pixelsPtr = sView.getUint32(16, true);
-      const scale = forcedScale || 1;
-
-      if (!window || currentWidth !== width || currentHeight !== height || currentScale !== scale) {
-        if (window && !window.destroyed) {
-          window.removeAllListeners('close');
-          try { window.destroy(); } catch (e) {}
-        }
-
-        currentWidth = width;
-        currentHeight = height;
-        currentScale = scale;
-
-        try {
-          window = sdl.video.createWindow({
-            title: 'Wagnostic 2.0 Host (Node.js)',
-            width: width * scale,
-            height: height * scale,
-            resizable: true,
-          });
-        } catch (err) {
-          console.error('Failed to create SDL window:', err.message);
-          exitCleanly();
-          return;
-        }
-
-        window.on('close', () => exitCleanly());
-
-        window.on('keyDown', (e) => {
-          const scancode = e.scancode;
-          if (scancode >= 0 && scancode < 256) keyBuffer[scancode] = 1;
-          updateGamepadKey(scancode, true);
-        });
-
-        window.on('keyUp', (e) => {
-          const scancode = e.scancode;
-          if (scancode >= 0 && scancode < 256) keyBuffer[scancode] = 0;
-          updateGamepadKey(scancode, false);
-        });
-
-        window.on('mouseMove', (e) => {
-          mouseX = Math.floor(e.x / currentScale);
-          mouseY = Math.floor(e.y / currentScale);
-        });
-
-        window.on('mouseButtonDown', (e) => {
-          if (e.button === 1) mouseButtonsMask |= 1;
-          if (e.button === 3) mouseButtonsMask |= 2;
-          if (e.button === 2) mouseButtonsMask |= 4;
-        });
-
-        window.on('mouseButtonUp', (e) => {
-          if (e.button === 1) mouseButtonsMask &= ~1;
-          if (e.button === 3) mouseButtonsMask &= ~2;
-          if (e.button === 2) mouseButtonsMask &= ~4;
-        });
-
-        window.on('mouseWheel', (e) => {
-          mouseWheelX += (e.dx || 0);
-          mouseWheelY += (e.dy || 0);
-        });
-      }
-
-      if (window && !window.destroyed && isRunning && pixelsPtr > 0) {
-        const vramRaw = new Uint8Array(memory.buffer, pixelsPtr, width * height * 4);
-        try {
-          window.render(width, height, width * 4, 'rgba32', vramRaw);
-        } catch (err) {}
-      }
+    if (maxFrames > 0 && frame >= maxFrames) {
+      cleanup();
+      ENV.exit(0);
     }
 
-    framesRun++;
-    if (maxFrames > 0 && framesRun >= maxFrames) {
-      exitCleanly();
-      return;
-    }
-
-    if (isRunning) {
-      setImmediate(gameLoop);
+    if (headless) {
+      if (typeof setImmediate !== 'undefined') setImmediate(step);
+      else setTimeout(step, 0);
+    } else {
+      setTimeout(step, 1000 / targetFps);
     }
   }
 
-  gameLoop();
+  step();
 }
 
-main().catch(err => {
-  console.error('Fatal error in Wagnostic Node Host:', err);
-  process.exit(0);
+run().catch((err) => {
+  console.error('Fatal error:', err);
+  ENV.exit(1);
 });
-

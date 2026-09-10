@@ -4,11 +4,8 @@
 #include <stdint.h>
 
 #define WGIF_EXTENSION "std:gif"
-#define WGIF_VERSION   1
 
 typedef struct {
-    uint32_t version;       /* 1 */
-    uint32_t size;          /* sizeof(wgif_t) = 28 */
     uint32_t recording;     /* 1 if host is actively recording GIF, 0 otherwise */
     uint32_t frame_count;   /* Number of frames captured so far */
     uint32_t max_frames;    /* Max frames to record (0 = unlimited / until exit) */

@@ -11,7 +11,7 @@ static uint32_t ticks = 0;
 int32_t wupdate(void) {
     ticks++;
     if (!initialized) {
-        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
+        surface = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION);
         if (surface) {
             surface->width = 320;
             surface->height = 240;

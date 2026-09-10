@@ -1,9 +1,8 @@
 *.wasm
 *.wat
-emulators/wasm3/wagnostic
+runners/native/wagnostic
+runners/native/wasm3
 wagnostic-term
-emulators/spidermonkey/wagnostic-sm
-emulators/gifnostic/gifnostic
 *.o
 *.a
 wagnostic.sh

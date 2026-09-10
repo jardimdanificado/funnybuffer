@@ -69,53 +69,38 @@ async function run() {
   const importObject = {
     env: {
       memory: new WebAssembly.Memory({ initial: 16 }),
-      wextension: (namePtr, version) => {
+      wextension: (namePtr) => {
         const name = readString(namePtr);
 
         // 1. Framebuffer
-        if ((name === 'framebuffer' || name === 'surface' || name === 'std:framebuffer' || name === 'std:surface') && version === 1) {
+        if (name === 'framebuffer' || name === 'surface' || name === 'std:framebuffer' || name === 'std:surface') {
           if (!fbPtr) {
-            fbPtr = hostAlloc(20, 4);
+            fbPtr = hostAlloc(12, 4);
             defaultFbPtr = hostAlloc(640 * 480 * 4, 4);
-            const view = new DataView(memory.buffer, fbPtr, 20);
-            view.setUint32(0, 1, true);               // version = 1
-            view.setUint32(4, 20, true);              // size = 20
-            view.setUint32(8, 320, true);             // width = 320
-            view.setUint32(12, 240, true);            // height = 240
-            view.setUint32(16, defaultFbPtr, true);   // pixels
+            const view = new DataView(memory.buffer, fbPtr, 12);
+            view.setUint32(0, 320, true);             // width = 320
+            view.setUint32(4, 240, true);             // height = 240
+            view.setUint32(8, defaultFbPtr, true);    // pixels
           }
           return fbPtr;
         }
 
         // 2. Clock
-        if ((name === 'clock' || name === 'std:clock') && version === 1) {
+        if (name === 'clock' || name === 'std:clock') {
           if (!clockPtr) {
-            clockPtr = hostAlloc(32, 8);
-            const view = new DataView(memory.buffer, clockPtr, 32);
-            view.setUint32(0, 1, true);
-            view.setUint32(4, 32, true);
-            view.setBigUint64(8, 0n, true);
-            view.setBigUint64(16, 1000n, true);
-            view.setFloat32(24, 1.0 / targetFps, true);
+            clockPtr = hostAlloc(24, 8);
+            const view = new DataView(memory.buffer, clockPtr, 24);
+            view.setBigUint64(0, 0n, true);
+            view.setBigUint64(8, 1000n, true);
+            view.setFloat32(16, 1.0 / targetFps, true);
           }
           return clockPtr;
         }
 
-        // 3. Unified I/O: std:io
-        if ((name === 'std:io' || name === 'io' || name === 'std:keyboard' || name === 'std:mouse' || name === 'std:gamepad' || name === 'keyboard' || name === 'mouse' || name === 'gamepad') && version === 1) {
+        // 3. IO
+        if (name === 'io' || name === 'std:io' || name === 'keyboard' || name === 'mouse' || name === 'gamepad') {
           if (!ioPtr) {
-            ioPtr = hostAlloc(304, 4);
-            const view = new DataView(memory.buffer, ioPtr, 304);
-            view.setUint32(0, 1, true);               // version = 1
-            view.setUint32(4, 304, true);             // size = 304
-            view.setInt32(8, 0, true);                // mouse_x
-            view.setInt32(12, 0, true);               // mouse_y
-            view.setUint32(16, 0, true);              // mouse_buttons
-            view.setInt32(20, 0, true);               // mouse_wheel_x
-            view.setInt32(24, 0, true);               // mouse_wheel_y
-            view.setUint32(28, 0, true);              // gamepad_buttons
-            new Int16Array(memory.buffer, ioPtr + 32, 8).fill(0); // gamepad_axes[8]
-            new Uint8Array(memory.buffer, ioPtr + 48, 256).fill(0); // keys[256]
+            ioPtr = hostAlloc(296, 4);
           }
           return ioPtr;
         }

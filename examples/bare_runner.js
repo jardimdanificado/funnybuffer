@@ -50,17 +50,14 @@ async function run() {
   let loggerBufPtr = 0;
 
   const customExtensions = {
-    'logger': (version) => {
-      if (version !== 1) return 0;
+    'logger': () => {
       if (!loggerPtr) {
-        loggerPtr = hostAlloc(20, 4);
+        loggerPtr = hostAlloc(12, 4);
         loggerBufPtr = hostAlloc(1024, 4);
-        const view = new DataView(memory.buffer, loggerPtr, 20);
-        view.setUint32(0, 1, true);            // version
-        view.setUint32(4, 20, true);           // size
-        view.setUint32(8, loggerBufPtr, true); // buffer
-        view.setUint32(12, 1024, true);        // capacity
-        view.setUint32(16, 0, true);           // length
+        const view = new DataView(memory.buffer, loggerPtr, 12);
+        view.setUint32(0, loggerBufPtr, true); // buffer
+        view.setUint32(4, 1024, true);        // capacity
+        view.setUint32(8, 0, true);           // length
       }
       return loggerPtr;
     },
@@ -69,12 +66,12 @@ async function run() {
   const importObject = {
     env: {
       memory: new WebAssembly.Memory({ initial: 16 }),
-      wextension: (namePtr, version) => {
+      wextension: (namePtr) => {
         const name = readString(namePtr);
-        console.log(`[Host] ROM requested extension: "${name}" (v${version})`);
+        console.log(`[Host] ROM requested extension: "${name}"`);
 
         if (customExtensions[name]) {
-          return customExtensions[name](version);
+          return customExtensions[name]();
         }
 
         // Return 0 (NULL) if extension is unknown/unsupported
@@ -105,13 +102,13 @@ async function run() {
 
     // Check if guest wrote anything to logger extension
     if (loggerPtr) {
-      const view = new DataView(memory.buffer, loggerPtr, 20);
-      const len = view.getUint32(16, true);
+      const view = new DataView(memory.buffer, loggerPtr, 12);
+      const len = view.getUint32(8, true);
       if (len > 0) {
         const textBytes = new Uint8Array(memory.buffer, loggerBufPtr, len);
         const msg = new TextDecoder().decode(textBytes);
         console.log(`[Guest Log] ${msg}`);
-        view.setUint32(16, 0, true); // Flush
+        view.setUint32(8, 0, true); // Flush
       }
     }
 

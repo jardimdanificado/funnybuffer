@@ -14,10 +14,7 @@
 extern "C" {
 #endif
 
-void *wextension(
-    const char *name,
-    uint32_t version
-);
+void *wextension(const char *name);
 
 int32_t wupdate(void);
 

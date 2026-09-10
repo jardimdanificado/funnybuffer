@@ -2,27 +2,39 @@
 
 Minimalist, modular, platform-agnostic WebAssembly multimedia runtime.
 
+- 📜 **[ABI.md](ABI.md)**: Core Binary ABI specification (`wupdate`, `wextension`, execution lifecycle).
+- 🧩 **[STD.md](STD.md)**: Standard Extensions specification (`std:framebuffer`, `std:clock`, `std:io`, `std:gif`, `logger`).
+
+---
+
 ## Quick Start
 
-### 1. Native Runner (C + wasm3 + SDL2)
-Interactive Window:
+### 1. Native Runner (100% libc / POSIX C + wasm3)
+Zero windowing dependencies (pure ANSI TrueColor terminal renderer + GIF export):
 ```bash
+# Build native runner:
 mkdir -p build && cd build && cmake .. && cmake --build .
-./wagnostic ../roms/display_test.wasm
+# Or via runners/native/Makefile:
+make -C runners/native
+
+# Interactive Terminal Execution:
+./build/wagnostic ../roms/display_test.wasm
+
+# Headless Execution & GIF Export:
+./build/wagnostic -g output.gif -n 60 ../roms/display_test.wasm
 ```
 
-Headless Execution & GIF Export:
+### 2. Node.js & Txiki.js Runner (Zero npm dependencies)
+Works out of the box with Node.js or `tjs` (txiki.js):
 ```bash
-./wagnostic -g output.gif -n 60 ../roms/display_test.wasm
-```
+# Interactive Terminal Run:
+node runners/node/wagnostic.js roms/display_test.wasm
 
-### 2. Node.js Runner
-Interactive or Headless:
-```bash
-cd emulators/node && npm install
-node wagnostic.js ../../roms/display_test.wasm
-# Headless run:
-node wagnostic.js -n 30 ../../roms/display_test.wasm
+# With Txiki:
+tjs run runners/node/wagnostic.js roms/display_test.wasm
+
+# Headless GIF Export:
+node runners/node/wagnostic.js -g output.gif -n 60 roms/display_test.wasm
 ```
 
 ---
@@ -41,8 +53,8 @@ static wclock_t       *clock_ext;
 
 int32_t wupdate(void) {
     if (!fb) {
-        fb        = (wframebuffer_t*)wextension("std:framebuffer", 1);
-        clock_ext = (wclock_t*)wextension("std:clock", 1);
+        fb        = (wframebuffer_t*)wextension("std:framebuffer");
+        clock_ext = (wclock_t*)wextension("std:clock");
         if (fb) {
             fb->width  = 320;
             fb->height = 240;
@@ -60,35 +72,35 @@ int32_t wupdate(void) {
 
 ---
 
-## Modular Extensions
+## Standard Extensions Summary
 
-| Extension Name | Version | Description | Header |
-|---|---|---|---|
-| `std:framebuffer` | 1 | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`) and dimensions | `framebuffer.h` |
-| `std:clock` | 1 | Monotonic ticks, frequency, and frame delta time | `clock.h` |
-| `std:io` | 1 | Unified I/O: Mouse/Pointer (X, Y, buttons, wheel), Gamepad (buttons, 8 axes), and Keyboard (256 scancodes) | `io.h` |
-| `std:gif` | 1 | GIF recording status, frame count, delay, and frame capture synchronization | `gif.h` |
-| `logger` | 1 | Simple UTF-8 text message logging to host console | `logger.h` |
+For full memory layouts, struct fields, and specifications, see **[STD.md](STD.md)**.
+
+| Extension Name | Description | Size | Header |
+|---|---|:---:|---|
+| `std:framebuffer` | Direct 32-bit RGBA8888 framebuffer (`0xAABBGGRR`) and dimensions | 12 B | `framebuffer.h` |
+| `std:clock` | Monotonic ticks, frequency, and frame delta time | 24 B | `clock.h` |
+| `std:io` | Unified I/O: Mouse/Pointer, Gamepad (buttons, 8 axes), Keyboard (256 scancodes) | 296 B | `io.h` |
+| `std:gif` | GIF recording status, frame count, delay, and frame capture synchronization | 20 B | `gif.h` |
+| `logger` | Simple UTF-8 text message logging to host console | 12 B | `logger.h` |
 
 ---
 
 ## Runners & Templates
-
-1. **Bare & Minimal Runners (Zero dependencies, fully customizable)**:
-   - **`examples/bare_runner.js`**: Pure JavaScript Node.js host (~60 lines) with custom extension support.
+ 
+1. **Official Runners (`runners/`)**:
+   - **`runners/native/`**: 100% `libc` / POSIX C runner with wasm3. Renders directly in terminal with 24-bit ANSI TrueColor half-blocks (`▀`) and headless GIF encoder (`-g file.gif`). Zero SDL2 / OpenGL dependencies!
+   - **`runners/node/`**: Universal zero-dependency JavaScript runner compatible with both **Node.js** and **txiki.js (`tjs`)**. ANSI TrueColor terminal renderer + pure JS GIF encoder.
+2. **Bare Reference Templates (`examples/`)**:
+   - **`examples/bare_runner.js`**: Pure JavaScript host (~60 lines) with custom extension dispatch.
    - **`examples/bare_runner.c`**: Pure C host using wasm3 (~90 lines).
-   - **`examples/terminal_runner.js`**: ANSI terminal runner rendering 32-bit RGBA directly in terminal using Unicode half-blocks.
-2. **Official Multimedia Runners**:
-   - **`native` (`build/wagnostic`)**: Standard C11 + wasm3 + SDL2 with windowing and headless GIF export (`-g file.gif`, `-n frames`, `--headless`).
-   - **`node` (`emulators/node/wagnostic.js`)**: Single-file host for Node.js using `@kmamal/sdl`.
-
+ 
 ---
-
+ 
 ## Running Test Suite
-
+ 
 ```bash
 cd roms
 make test-native   # Runs all 15 test ROMs through native runner
 make test-node     # Runs all 15 test ROMs through Node.js runner
 ```
-

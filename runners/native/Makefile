@@ -1,18 +1,8 @@
 CC = gcc
 WASM3_DIR = wasm3/source
 
-# MinGW detection for Windows
-ifneq (,$(findstring MINGW,$(shell uname -s)))
-  LDFLAGS = -lmingw32 -lSDL2main -lSDL2 -lopengl32 -lm
-else
-  UNAME_S := $(shell uname -s)
-  ifeq ($(UNAME_S),Darwin)
-    CFLAGS = -I$(WASM3_DIR) -O2 -I/opt/homebrew/include -I/opt/homebrew/opt/sdl2/include -I/usr/local/include
-    LDFLAGS = -L/opt/homebrew/lib -L/opt/homebrew/opt/sdl2/lib -lSDL2 -framework OpenGL -lm
-  else
-    LDFLAGS = -lSDL2 -lGL -lm
-  endif
-endif
+CFLAGS ?= -I$(WASM3_DIR) -I../../include -O2
+LDFLAGS = -lm
 WASM3_REPO = https://github.com/wasm3/wasm3.git
 WASM3_SRC = $(WASM3_DIR)/m3_api_libc.c \
             $(WASM3_DIR)/m3_bind.c \
@@ -40,7 +30,7 @@ $(WASM3_DIR)/m3_api_libc.c:
 
 host: $(HOST)
 
-$(HOST): host.c $(WASM3_SRC)
+$(HOST): host.c gif_encoder.c $(WASM3_SRC)
 	$(CC) $(CFLAGS) $^ -o $@ $(LDFLAGS)
 
 clean:

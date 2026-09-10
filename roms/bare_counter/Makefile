@@ -6,3 +6,6 @@ all: ../bare_counter.wasm
 
 ../bare_counter.wasm: main.c
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $<
+
+clean:
+	rm -f ../bare_counter.wasm

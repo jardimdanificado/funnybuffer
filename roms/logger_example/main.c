@@ -20,7 +20,7 @@ static void log_str(const char *s) {
 
 int32_t wupdate(void) {
     if (!logger) {
-        logger = (wlogger_t*)wextension("logger", 1);
+        logger = (wlogger_t*)wextension(WLOGGER_EXTENSION);
     }
 
     step++;

@@ -3,16 +3,13 @@ project(Wagnostic C)
 
 set(CMAKE_C_STANDARD 11)
 
-# Find SDL2
-find_package(SDL2 REQUIRED)
-
 # Sources (shared wasm3 engine)
-file(GLOB WASM3_SRC "emulators/wasm3/wasm3/source/*.c")
+file(GLOB WASM3_SRC "runners/native/wasm3/source/*.c")
 
-# ── wagnostic (wasm3 + SDL2 + headless / GIF native runner) ──────────────────
+# ── wagnostic (100% Libc/POSIX Terminal + GIF Native Runner) ──────────────────
 set(WAGNOSTIC_SOURCES
-    emulators/wasm3/host.c
-    emulators/wasm3/gif_encoder.c
+    runners/native/host.c
+    runners/native/gif_encoder.c
     ${WASM3_SRC}
 )
 
@@ -20,23 +17,14 @@ add_executable(wagnostic ${WAGNOSTIC_SOURCES})
 
 target_include_directories(wagnostic PRIVATE
     include
-    emulators/wasm3
-    emulators/wasm3/wasm3/source
-    ${SDL2_INCLUDE_DIRS}
+    runners/native
+    runners/native/wasm3/source
 )
 
-target_link_libraries(wagnostic PRIVATE
-    ${SDL2_LIBRARIES}
-)
-
-if(WIN32)
-    find_package(GLEW REQUIRED)
-    target_link_libraries(wagnostic PRIVATE GLEW::GLEW opengl32)
-else()
-    target_link_libraries(wagnostic PRIVATE GL m)
+if(NOT WIN32)
+    target_link_libraries(wagnostic PRIVATE m)
 endif()
 
 if(MSVC)
     target_compile_options(wagnostic PRIVATE /std:c11)
 endif()
-

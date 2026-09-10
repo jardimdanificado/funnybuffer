@@ -18,27 +18,21 @@ static int test_passed = 0;
 int32_t wupdate(void) {
     if (!initialized) {
         // Test 1: Discover standard extensions via std:*
-        framebuffer = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
-        clock_ext   = (wclock_t*)wextension(WCLOCK_EXTENSION, WCLOCK_VERSION);
-        io          = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
-        gif         = (wgif_t*)wextension(WGIF_EXTENSION, WGIF_VERSION);
+        framebuffer = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION);
+        clock_ext   = (wclock_t*)wextension(WCLOCK_EXTENSION);
+        io          = (wio_t*)wextension(WIO_EXTENSION);
+        gif         = (wgif_t*)wextension(WGIF_EXTENSION);
 
         // Test 2: Unknown extension returns NULL
-        void* unk = wextension("unknown_custom_xyz", 1);
-
-        // Test 3: Unsupported version returns NULL
-        void* inv_ver = wextension("std:framebuffer", 999);
+        void* unk = wextension("unknown_custom_xyz");
 
         test_passed = (framebuffer != NULL) &&
                       (clock_ext != NULL) &&
                       (io != NULL) &&
                       (gif != NULL) &&
                       (unk == NULL) &&
-                      (inv_ver == NULL) &&
-                      (framebuffer->version == 1) &&
-                      (clock_ext->version == 1) &&
-                      (io->version == 1) &&
-                      (gif->version == 1);
+                      (framebuffer->width == 320) &&
+                      (framebuffer->height == 240);
 
         initialized = 1;
     }

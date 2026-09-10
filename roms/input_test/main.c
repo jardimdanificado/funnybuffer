@@ -145,9 +145,9 @@ static void draw_gamepad_section(void) {
 int32_t wupdate(void) {
     ticks++;
     if (!initialized) {
-        surface   = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION, WFRAMEBUFFER_VERSION);
-        clock_ext = (wclock_t*)wextension(WCLOCK_EXTENSION, WCLOCK_VERSION);
-        io        = (wio_t*)wextension(WIO_EXTENSION, WIO_VERSION);
+        surface   = (wframebuffer_t*)wextension(WFRAMEBUFFER_EXTENSION);
+        clock_ext = (wclock_t*)wextension(WCLOCK_EXTENSION);
+        io        = (wio_t*)wextension(WIO_EXTENSION);
 
         if (surface) {
             surface->width = 320;

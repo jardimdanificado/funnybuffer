@@ -7,7 +7,7 @@
  *   - Guest exports `wupdate()`
  *
  * Compile:
- *   gcc -O2 bare_runner.c -I../emulators/wasm3/wasm3/source ../emulators/wasm3/wasm3/source/*.c -lm -o bare_runner
+ *   gcc -O2 bare_runner.c -I../runners/native/wasm3/source ../runners/native/wasm3/source/*.c -lm -o bare_runner
  *
  * Usage:
  *   ./bare_runner <path-to-rom.wasm> [max_frames]
@@ -41,18 +41,15 @@ static uint32_t g_logger_ptr = 0;
 static uint32_t g_logger_buf_ptr = 0;
 
 typedef struct {
-    uint32_t version;
-    uint32_t size;
     uint32_t buffer;
     uint32_t capacity;
     uint32_t length;
 } bare_logger_t;
 
-/* ── Host Capability Dispatcher: wextension(name, version) ── */
+/* ── Host Capability Dispatcher: wextension(name) ── */
 m3ApiRawFunction(host_wextension) {
     m3ApiReturnType(uint32_t);
     m3ApiGetArg(uint32_t, name_ptr);
-    m3ApiGetArg(uint32_t, version);
 
     refresh_memory(runtime);
     if (!g_mem || name_ptr >= g_mem_len) {
@@ -60,17 +57,15 @@ m3ApiRawFunction(host_wextension) {
     }
 
     const char *name = (const char*)(g_mem + name_ptr);
-    printf("[Host] ROM requested extension: \"%s\" (v%u)\n", name, version);
+    printf("[Host] ROM requested extension: \"%s\"\n", name);
 
     // Custom Extension Example: "logger"
-    if (strcmp(name, "logger") == 0 && version == 1) {
+    if (strcmp(name, "logger") == 0) {
         if (!g_logger_ptr) {
             g_logger_ptr = host_alloc(runtime, sizeof(bare_logger_t), 4);
             g_logger_buf_ptr = host_alloc(runtime, 1024, 4);
 
             bare_logger_t *log = (bare_logger_t*)(g_mem + g_logger_ptr);
-            log->version = 1;
-            log->size = sizeof(bare_logger_t);
             log->buffer = g_logger_buf_ptr;
             log->capacity = 1024;
             log->length = 0;
@@ -117,7 +112,7 @@ int main(int argc, char **argv) {
     if (res) { fprintf(stderr, "LoadModule error: %s\n", res); return 1; }
 
     // Link wextension import
-    m3_LinkRawFunction(module, "env", "wextension", "i(ii)", &host_wextension);
+    m3_LinkRawFunction(module, "env", "wextension", "i(i)", &host_wextension);
 
     // Find wupdate export
     IM3Function func_wupdate;
